@@ -2,56 +2,31 @@
 # ROBLOX CHEAT SCANNER v4.4
 # PROPERTY OF JD
 #
-# CHANGES FROM v4.3:
-#   + RESTORED: Thread start address scan (shellcode thread detection)
-#   + RESTORED: Process hollowing detection (PEB ImageBase validation)
-#   + RESTORED: Named pipe enumeration (cheat IPC/loader detection)
-#   + RESTORED: Handle-open detection (non-Roblox processes with Roblox handle)
-#   + RESTORED: Full Run-MemoryScan with [1/3][2/3][3/3] steps wired up
-#   + RESTORED: Dedicated Kernel Driver scan (event 7045 + loaded driver
-#     enumeration + BYOVD WMI check + Memory Integrity blocked-load check),
-#     merged with v4.3 "near Roblox launch" timing logic
-#   + RESTORED: Launch chain validation w/ official-path + neutral-parent logic
-#   + RESTORED: Renamed-cheat PE header check + generic-exe suspicious location
-#     check (Section 3)
-#   + RESTORED: Startup folder check + hidden process check (Section 4)
-#   + RESTORED: Recent files scan + Event 4688 process-creation aggregation
-#     (Section 7)
-#   + RESTORED: Progress bar during Roblox folder integrity scan
-#   + RESTORED: GUI viewers -- Delta, Kernel, Unsigned Driver, Launch Chain,
-#     6-tab Memory viewer (Strings/Suspicious/Threads/Hollow/Pipes/Handles),
-#     4-tab BAM viewer (All/Flagged/Roblox Correlation/By User), Prefetch viewer
-#   + Viewer sequence restored to guided "ENTER to continue" style
-#   + Artifact cleaner REMOVED entirely
-#   + Kept from v4.3: HIT terminology, magenta/yellow hit coloring,
-#     readprocessmemory/writeprocessmemory = SUSPICIOUS not HIT,
-#     alphabetical delta with hits pinned to top, findings summary before
-#     scores, Vanguard/Riot Games FP exemptions, end-of-scan reminder
-#   + ASCII borders throughout (no Unicode box-drawing chars)
-#   + Bracket prefix tags: [OK] [FAIL] [WARN] [HIT] [SUSP] [MEM] etc.
-#   + $suspiciousButLikelyRobloxStrings split from main string hits
-#   + $bamViewerData / $prefetchViewerData populated directly (no return struct)
-#   + Load-PreviousSnapshot normalises JSON arrays to prevent type mismatches
-#
 # HOW IT WORKS:
 #   1.  Time range selection (2d / 3d / 7d / all time)
 #   2.  Snapshot of BAM, MUICache, Shimcache, UserAssist, Prefetch
-#   3.  Full system scan across all sections
-#   4.  Roblox PRIVATE memory scan + thread start address scan
-#   5.  Named pipe enumeration (cheat IPC)
-#   6.  Process hollowing detection
-#   7.  Handle-open detection (injector process tracking)
-#   8.  Kernel driver detection and BYOVD checks
-#   9.  Roblox launch chain validation
-#  10.  Roblox log file scanning
-#  11.  Snapshot delta comparison (if previous snapshot exists)
-#  12.  Findings summary + scores
-#  13.  HTML report
-#  14.  Guided GUI viewer sequence
+#   3.  Section 1  - System protection (Defender, HVCI, AMSI, WMI)
+#   4.  Section 2  - Network & DNS
+#   5.  Section 3  - Filesystem execution artifacts
+#   6.  Section 4  - Persistence
+#   7.  Section 5  - Registry execution artifacts
+#   8.  Section 6  - PowerShell history & entropy
+#   9.  Section 7  - Recent activity & event logs
+#  10.  Roblox folder integrity scan
+#  11.  Memory scan (strings / threads / hollow / pipes / handles)
+#  12.  PAN scan (prefetch all-names broad pass)
+#  13.  Kernel driver scan (7045 / loaded / BYOVD / MI-blocked)
+#  14.  Launch chain validation
+#  15.  Roblox log scan
+#  16.  AmCache via VSS
+#  17.  Snapshot delta comparison
+#  18.  Findings summary + scores
+#  19.  HTML report
+#  20.  Guided GUI viewer sequence
 #
 # INSTRUCTIONS:
 #   FIRST SCAN  -- Close Roblox completely before running
-#   SECOND SCAN -- Open Roblox, join a game, wait 1-3 min, then run again
+#   SECOND SCAN -- Open Roblox, join a game, wait 1-3 min, run again
 #
 # Run as Administrator in PowerShell
 # =====================================================
@@ -72,7 +47,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # =====================================================
-# WIN32 MEMORY API
+# WIN32 P/INVOKE TYPES
 # =====================================================
 if (-not ([Management.Automation.PSTypeName]'Win32Mem').Type) {
     Add-Type -TypeDefinition @"
@@ -81,10 +56,10 @@ using System.Runtime.InteropServices;
 public class Win32Mem {
     public const uint PROCESS_VM_READ           = 0x0010;
     public const uint PROCESS_QUERY_INFORMATION = 0x0400;
-    public const uint MEM_COMMIT   = 0x1000;
-    public const uint MEM_IMAGE    = 0x1000000;
-    public const uint MEM_MAPPED   = 0x40000;
-    public const uint MEM_PRIVATE  = 0x20000;
+    public const uint MEM_COMMIT  = 0x1000;
+    public const uint MEM_IMAGE   = 0x1000000;
+    public const uint MEM_MAPPED  = 0x40000;
+    public const uint MEM_PRIVATE = 0x20000;
     public const uint PAGE_GUARD    = 0x100;
     public const uint PAGE_NOACCESS = 0x01;
     [StructLayout(LayoutKind.Sequential)]
@@ -126,9 +101,6 @@ public class Win32Mem {
 "@ -ErrorAction Stop
 }
 
-# =====================================================
-# WIN32 THREAD API
-# =====================================================
 if (-not ([Management.Automation.PSTypeName]'Win32Thread').Type) {
     Add-Type -TypeDefinition @"
 using System;
@@ -164,9 +136,6 @@ public class Win32Thread {
 "@ -ErrorAction Stop
 }
 
-# =====================================================
-# WIN32 HOLLOW API
-# =====================================================
 if (-not ([Management.Automation.PSTypeName]'Win32Hollow').Type) {
     Add-Type -TypeDefinition @"
 using System;
@@ -190,9 +159,6 @@ public class Win32Hollow {
 "@ -ErrorAction Stop
 }
 
-# =====================================================
-# WIN32 HANDLE API
-# =====================================================
 if (-not ([Management.Automation.PSTypeName]'Win32Handle').Type) {
     Add-Type -TypeDefinition @"
 using System;
@@ -231,7 +197,7 @@ public class Win32Handle {
 }
 
 # =====================================================
-# CHEAT TERM LISTS
+# TERM LISTS
 # =====================================================
 $exactTerms = @(
     "synapse","scriptware","hydroxide","calamari","sirhurt",
@@ -243,13 +209,13 @@ $exactTerms = @(
     "ahk2exe","celex","autohotkey","krnl","xeno","wave.cx",
     "sentinel","coco","fluxteam","evon","arceus","app.exe",
     "hydrogen","seliware","cryptware","vortex","zorara",
-    "electron","coco hub","dex explorer","infinite yield"
+    "electron","dex explorer","infinite yield","coco hub",
+    "deluahook","valyrian","swift","redzhub","pcore",
+    "namelessexec","nihon","xploits","bloxfruit"
 )
 
 $exactNameOnlyTerms = @("autohotkey","celery","wave","sentinel","electron")
 
-# Strings found in PRIVATE Roblox memory that Roblox itself may legitimately use.
-# These go to the [SUSP] tab, not the confirmed [HIT] tab.
 $suspiciousButLikelyRobloxStrings = @(
     "readprocessmemory",
     "writeprocessmemory"
@@ -337,90 +303,14 @@ $byovdDrivers = @(
     "aswarpot","asrdrv","atillk64","gdrv2","glckio2",
     "nicm","nscm","pcdsrvc","rtkio64","semav6msr64",
     "ntiolib_x64","directio64","phymemx64",
-    "phydmacc","bsmi","bs_hwmio64","msmouse","amsdk"
+    "phydmacc","bsmi","bs_hwmio64","amsdk"
 )
 
-# =====================================================
-# FALSE POSITIVE PATTERNS
-# =====================================================
-$globalFPPatterns = @(
-    "webview2loader","webview2",
-    "appdata\\local\\fishstrap",
-    "fishstrap\\fishstrap",
-    "steam\\steamapps","steamapps",
-    "epicgames","epic games",
-    "appdata\\local\\wave\\wave.exe",
-    "minecraft","fabricmc","fabric-loader","modrinth","java-runtime",
-    "node.exe","nodejs","node_modules",
-    "aimlabs","aim lab","aimlab_tb",
-    "phasmophobia","unturned","left4dead","left 4 dead",
-    "battleye","easyanticheat","be_service",
-    "grand theft auto","gta5","rockstar","rgsclientservice",
-    "origin","ea games","eadesktop",
-    "discord","discordptb","discordcanary",
-    "obs64","obs-studio","streamlabs",
-    "google\\chrome","mozilla\\firefox","msedge",
-    "visualstudio","devenv","msbuild",
-    "windowsapps\\microsoft","program files\\microsoft",
-    "system32","syswow64","windows\\winsxs",
-    "riot games","riot vanguard","riotvanguard",
-    "vgtray","vgc.exe","vgk","riotclient",
-    "program files\\riot vanguard",
-    "programdata\\riot games"
+$knownBadThumbs = @(
+    "3721D8C39C1E1676C3F26D569FE9B09E89F14B5A",
+    "B4781F8E67C1DECA727B3BE952176CC91C160B42",
+    "D3F76BE9B49D1D3F8D8B3C1DB4A5E49A15B1E17E"
 )
-
-$bamFPPatterns = @(
-    "steam\\steamapps","steamapps",
-    "appdata\\local\\wave\\wave.exe",
-    "appdata\\local\\fishstrap","fishstrap\\fishstrap.exe",
-    "epicgames","eadesktop","origin",
-    "discord","obs64","obs-studio",
-    "riot games","riot vanguard","vgtray","vgc.exe",
-    "riotclient","program files\\riot vanguard"
-)
-
-$muiFPPatterns = @(
-    "fishstrap","appdata\\local\\fishstrap",
-    "left4dead","phasmophobia","unturned",
-    "aim lab","aimlabs","battleye",
-    "rockstar","steam","epic games","epicgames",
-    "grand theft auto","node.js","wave terminal",
-    "waveterm","appdata\\local\\wave\\",
-    "discord","obs","streamlabs","spotify",
-    "chrome","firefox","msedge","opera",
-    "riot games","riot vanguard","vgtray","riotclient",
-    "valorant","vanguard"
-)
-
-$uaFPPatterns = @(
-    "steam\\steamapps","steamapps","phasmophobia","unturned",
-    "aim lab","aimlabs","grand theft auto",
-    "appdata\\local\\wave\\wave.exe",
-    "appdata\\local\\fishstrap","fishstrap",
-    "epicgames","origin","eadesktop",
-    "discord","obs","streamlabs",
-    "riot games","riot vanguard","vgtray","riotclient","valorant"
-)
-
-$shimFPPatterns = @(
-    "steam\\steamapps","steamapps",
-    "appdata\\local\\wave\\wave",
-    "node.exe","aimlabs","phasmophobia",
-    "left4dead","unturned","fishstrap","webview2",
-    "epicgames","origin","discord","obs",
-    "riot games","riot vanguard","vgtray","vgc","vgk",
-    "riotclient","program files\\riot vanguard",
-    "programdata\\riot games","valorant"
-)
-
-$robloxFolderFPFiles = @(
-    "webview2loader.dll","webview2.dll",
-    "d3dcompiler_47.dll","libcef.dll","chrome_elf.dll",
-    "msvcp140.dll","vcruntime140.dll","vcruntime140_1.dll",
-    "msvcp140_1.dll","concrt140.dll","vccorlib140.dll"
-)
-
-$knownRobloxSigners = @("Roblox Corporation","Roblox")
 
 $knownWmiConsumers = @(
     "microsoft","windows","sccm","symantec","sophos",
@@ -457,7 +347,7 @@ $suspContent = @(
 
 $psFPPatterns = @(
     "get-mpcomputerstatus","write-host","foregroundcolor",
-    "ftp.exe","cheat_scan","robloxcheatscanner"
+    "ftp.exe","cheat_scan","robloxcheatscanner","cheat_scan_report"
 )
 
 $remoteExecPatterns = @(
@@ -466,7 +356,7 @@ $remoteExecPatterns = @(
     @{ Pattern = "iex(new-object";                       Label = "Remote script via iex" },
     @{ Pattern = "downloadstring";                       Label = "Remote script download+exec" },
     @{ Pattern = "-encodedcommand";                      Label = "Encoded PowerShell command" },
-    @{ Pattern = "-enc ";                                Label = "Encoded PowerShell (short)" },
+    @{ Pattern = "-enc ";                                Label = "Encoded PowerShell short" },
     @{ Pattern = "bypass";                               Label = "Execution policy bypass" },
     @{ Pattern = "disable-amsi";                         Label = "AMSI disable attempt" },
     @{ Pattern = "set-mppreference -disable";            Label = "Defender disable attempt" },
@@ -474,6 +364,86 @@ $remoteExecPatterns = @(
 )
 
 $suspiciousPorts = @(4444,1337,31337,8888,9999,6666,30007)
+
+# =====================================================
+# FALSE POSITIVE PATTERNS
+# =====================================================
+$globalFPPatterns = @(
+    "webview2loader","webview2",
+    "appdata\\local\\fishstrap","fishstrap\\fishstrap",
+    "steam\\steamapps","steamapps",
+    "epicgames","epic games",
+    "appdata\\local\\wave\\wave.exe",
+    "minecraft","fabricmc","fabric-loader","modrinth","java-runtime",
+    "node.exe","nodejs","node_modules",
+    "aimlabs","aim lab","aimlab_tb",
+    "phasmophobia","unturned","left4dead","left 4 dead",
+    "battleye","easyanticheat","be_service",
+    "grand theft auto","gta5","rockstar","rgsclientservice",
+    "origin","ea games","eadesktop",
+    "discord","discordptb","discordcanary",
+    "obs64","obs-studio","streamlabs",
+    "google\\chrome","mozilla\\firefox","msedge",
+    "visualstudio","devenv","msbuild",
+    "windowsapps\\microsoft","program files\\microsoft",
+    "system32","syswow64","windows\\winsxs",
+    "riot games","riot vanguard","riotvanguard",
+    "vgtray","vgc.exe","vgk","riotclient",
+    "program files\\riot vanguard","programdata\\riot games",
+    "valorant"
+)
+
+$bamFPPatterns = @(
+    "steam\\steamapps","steamapps",
+    "appdata\\local\\wave\\wave.exe",
+    "appdata\\local\\fishstrap","fishstrap\\fishstrap.exe",
+    "epicgames","eadesktop","origin",
+    "discord","obs64","obs-studio",
+    "riot games","riot vanguard","vgtray","vgc.exe",
+    "riotclient","program files\\riot vanguard","valorant"
+)
+
+$muiFPPatterns = @(
+    "fishstrap","appdata\\local\\fishstrap",
+    "left4dead","phasmophobia","unturned",
+    "aim lab","aimlabs","battleye",
+    "rockstar","steam","epic games","epicgames",
+    "grand theft auto","node.js","wave terminal",
+    "waveterm","appdata\\local\\wave\\",
+    "discord","obs","streamlabs","spotify",
+    "chrome","firefox","msedge","opera",
+    "riot games","riot vanguard","vgtray","riotclient","valorant","vanguard"
+)
+
+$uaFPPatterns = @(
+    "steam\\steamapps","steamapps","phasmophobia","unturned",
+    "aim lab","aimlabs","grand theft auto",
+    "appdata\\local\\wave\\wave.exe",
+    "appdata\\local\\fishstrap","fishstrap",
+    "epicgames","origin","eadesktop",
+    "discord","obs","streamlabs",
+    "riot games","riot vanguard","vgtray","riotclient","valorant"
+)
+
+$shimFPPatterns = @(
+    "steam\\steamapps","steamapps",
+    "appdata\\local\\wave\\wave",
+    "node.exe","aimlabs","phasmophobia",
+    "left4dead","unturned","fishstrap","webview2",
+    "epicgames","origin","discord","obs",
+    "riot games","riot vanguard","vgtray","vgc","vgk",
+    "riotclient","program files\\riot vanguard",
+    "programdata\\riot games","valorant"
+)
+
+$robloxFolderFPFiles = @(
+    "webview2loader.dll","webview2.dll",
+    "d3dcompiler_47.dll","libcef.dll","chrome_elf.dll",
+    "msvcp140.dll","vcruntime140.dll","vcruntime140_1.dll",
+    "msvcp140_1.dll","concrt140.dll","vccorlib140.dll"
+)
+
+$knownRobloxSigners = @("Roblox Corporation","Roblox")
 
 # =====================================================
 # PRECOMPILED FP REGEX
@@ -509,8 +479,8 @@ $script:ScanDaysBack = 2
 $script:ScanCutoff   = (Get-Date).AddDays(-2)
 
 function Set-TimeRange($days) {
-    $script:ScanDaysBack = $days
-    $script:ScanCutoff   = (Get-Date).AddDays(-$days)
+    $script:ScanDaysBack = if ($days -ge 9999) { 9999 } else { $days }
+    $script:ScanCutoff   = if ($days -ge 9999) { [DateTime]::MinValue } else { (Get-Date).AddDays(-$days) }
 }
 
 $allUserProfiles = @()
@@ -823,7 +793,6 @@ function Write-Warn($msg)       { Write-Host "  [WARN] $msg" -ForegroundColor Ye
 function Write-Info($msg)       { Write-Host "  [....] $msg" -ForegroundColor Gray }
 function Write-Hit($msg)        { Write-Host "  [HIT]  $msg" -ForegroundColor Magenta }
 function Write-SuspHit($msg)    { Write-Host "  [SUSP] $msg" -ForegroundColor Yellow }
-function Write-RobloxHit($msg)  { Write-Host "  [MEM]  $msg" -ForegroundColor Cyan }
 function Write-Delta($msg)      { Write-Host "  [DEL]  $msg" -ForegroundColor Yellow }
 function Write-DeltaBlue($msg)  { Write-Host "  [ADD]  $msg" -ForegroundColor Blue }
 function Write-DeltaHit($msg)   { Write-Host "  [HIT]  $msg" -ForegroundColor Magenta }
@@ -859,7 +828,7 @@ function Select-TimeRange {
     Write-Host "  |  [4] All time     (slowest -- most thorough)   |" -ForegroundColor White
     Write-Host "  +=================================================+" -ForegroundColor Cyan
     Write-Host ""
-    $choice = Read-Host "  Enter choice [1-4] or ENTER for default (2 days)"
+    $choice = Read-Host "  Enter choice [1-4] or ENTER for default"
     switch ($choice.Trim()) {
         "2" { Set-TimeRange 3;    Write-OK "Time range: last 3 days" }
         "3" { Set-TimeRange 7;    Write-OK "Time range: last 7 days" }
@@ -870,7 +839,7 @@ function Select-TimeRange {
 }
 
 # =====================================================
-# SNAPSHOT
+# SNAPSHOT FUNCTIONS
 # =====================================================
 function Get-CurrentSnapshot {
     $snap = [ordered]@{
@@ -928,8 +897,7 @@ function Get-CurrentSnapshot {
                     $props = Get-ItemProperty $countPath -ErrorAction SilentlyContinue
                     if ($props) {
                         $props.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
-                            $decoded = UnROT13 $_.Name
-                            $snap.UserAssist += @{ Encoded = $_.Name; Decoded = $decoded }
+                            $snap.UserAssist += @{ Encoded = $_.Name; Decoded = (UnROT13 $_.Name) }
                         }
                     }
                 }
@@ -943,13 +911,11 @@ function Get-CurrentSnapshot {
         if (Test-Path $shimPath) {
             $shimRaw = (Get-ItemProperty $shimPath -ErrorAction Stop).AppCompatCache
             if ($shimRaw -and $shimRaw.Length -gt 16) {
-                $ustr  = [System.Text.Encoding]::Unicode.GetString($shimRaw)
-                $seen  = [System.Collections.Generic.HashSet[string]]::new()
-                $mlist = [regex]::Matches($ustr, '[A-Za-z]:\\[^\x00-\x1F"<>|]{4,200}')
-                foreach ($m in $mlist) {
-                    $val = $m.Value.Trim() -replace "[^\x20-\x7E]", ""
-                    if ($val.Length -gt 5 -and -not $seen.Contains($val)) {
-                        $seen.Add($val) | Out-Null
+                $ustr = [System.Text.Encoding]::Unicode.GetString($shimRaw)
+                $seen = [System.Collections.Generic.HashSet[string]]::new()
+                [regex]::Matches($ustr, '[A-Za-z]:\\[^\x00-\x1F"<>|]{4,200}') | ForEach-Object {
+                    $val = $_.Value.Trim() -replace "[^\x20-\x7E]",""
+                    if ($val.Length -gt 5 -and $seen.Add($val)) {
                         $snap.Shimcache += @{ Path = $val }
                     }
                 }
@@ -980,8 +946,8 @@ function Save-Snapshot($snap) {
 function Load-PreviousSnapshot {
     if (-not (Test-Path $snapshotPath)) { return $null }
     try {
-        $raw  = Get-Content $snapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $norm = [ordered]@{
+        $raw = Get-Content $snapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        return [ordered]@{
             Timestamp  = $raw.Timestamp
             Computer   = $raw.Computer
             User       = $raw.User
@@ -991,7 +957,6 @@ function Load-PreviousSnapshot {
             Shimcache  = @($raw.Shimcache  | ForEach-Object { @{ Path = $_.Path } })
             Prefetch   = @($raw.Prefetch   | ForEach-Object { @{ Name = $_.Name; SizeKB = $_.SizeKB; LastRun = $_.LastRun; RunCount = $_.RunCount } })
         }
-        return $norm
     } catch { return $null }
 }
 
@@ -1002,7 +967,6 @@ function Compare-Snapshots($previous, $current) {
     Write-Header "SNAPSHOT DELTA -- WHAT CHANGED SINCE LAST SCAN" "Yellow"
     Write-Info "Previous : $($previous.Timestamp)"
     Write-Info "Current  : $($current.Timestamp)"
-    Write-Info "Filter   : last $script:ScanDaysBack day(s)"
     Write-Host ""
     $hits = 0
 
@@ -1016,19 +980,14 @@ function Compare-Snapshots($previous, $current) {
             return 0
         }
         $localHits = 0
-        # Hits pinned to top, alphabetical
-        $hitAdded = @($added | Where-Object {
-            $m  = & $getMatch $_
-            $fp = if ($fpCheck) { & $fpCheck $_ } else { $false }
-            $m -and -not $fp
-        } | Sort-Object { & $getKey $_ })
-        foreach ($entry in $hitAdded) {
+        # Hits pinned to top
+        foreach ($entry in ($added | Where-Object { $m = & $getMatch $_; $fp = if ($fpCheck) { & $fpCheck $_ } else { $false }; $m -and -not $fp } | Sort-Object { & $getKey $_ })) {
             $key = & $getKey $entry
             $m   = & $getMatch $entry
             Write-DeltaHit "$label ADDED -- HIT: $key matches '$m'"
             Add-Finding "SnapshotDelta" "$category-Added-Hit" $key $entry $null "Snapshot Delta" $addScore
-            Add-Timeline "DELTA: New HIT $label : $key matches '$m'"
-            $script:deltaFindings.Add([PSCustomObject]@{ Category=$label; Change="ADDED-HIT"; Entry=$key; FullPath=$entry; Note="HIT MATCH: $m" })
+            Add-Timeline "DELTA: $label HIT added: $key matches '$m'"
+            $script:deltaFindings.Add([PSCustomObject]@{ Category=$label; Change="ADDED-HIT"; Entry=$key; FullPath=$entry; Note="HIT: $m" })
             $localHits++
         }
         foreach ($entry in ($deleted | Sort-Object { & $getKey $_ })) {
@@ -1040,15 +999,9 @@ function Compare-Snapshots($previous, $current) {
             DeductCheat "Snapshot Delta" $deleteScore
             $localHits++
         }
-        $cleanAdded = @($added | Where-Object {
-            $m  = & $getMatch $_
-            $fp = if ($fpCheck) { & $fpCheck $_ } else { $false }
-            -not $m -or $fp
-        } | Sort-Object { & $getKey $_ })
-        foreach ($entry in $cleanAdded) {
-            $key = & $getKey $entry
-            Write-DeltaBlue "$label ADDED (clean): $key"
-            $script:deltaFindings.Add([PSCustomObject]@{ Category=$label; Change="ADDED"; Entry=$key; FullPath=$entry; Note="New -- no match" })
+        foreach ($entry in ($added | Where-Object { $m = & $getMatch $_; $fp = if ($fpCheck) { & $fpCheck $_ } else { $false }; -not $m -or $fp } | Sort-Object { & $getKey $_ })) {
+            Write-DeltaBlue "$label ADDED (clean): $(& $getKey $entry)"
+            $script:deltaFindings.Add([PSCustomObject]@{ Category=$label; Change="ADDED"; Entry=(& $getKey $entry); FullPath=$entry; Note="New -- no match" })
         }
         return $localHits
     }
@@ -1058,8 +1011,7 @@ function Compare-Snapshots($previous, $current) {
     $hits += Process-DeltaSection "BAM" $prevBAM $currBAM `
         { param($e) Split-Path $e -Leaf } `
         { param($e) Test-CheatMatch $e.ToLower() } `
-        { param($e) Is-BAMFalsePositive $e } `
-        20 30 "BAM"
+        { param($e) Is-BAMFalsePositive $e } 20 30 "BAM"
     Write-Host ""
 
     $prevMUI = @($previous.MUICache | ForEach-Object { $_.Entry })
@@ -1067,8 +1019,7 @@ function Compare-Snapshots($previous, $current) {
     $hits += Process-DeltaSection "MUICache" $prevMUI $currMUI `
         { param($e) $e } `
         { param($e) Test-CheatMatch $e.ToLower() } `
-        { param($e) Is-MUIFalsePositive $e } `
-        15 25 "MUICache"
+        { param($e) Is-MUIFalsePositive $e } 15 25 "MUICache"
     Write-Host ""
 
     $prevUA = @($previous.UserAssist | ForEach-Object { $_.Encoded })
@@ -1076,10 +1027,10 @@ function Compare-Snapshots($previous, $current) {
     $hits += Process-DeltaSection "UserAssist" $prevUA $currUA `
         { param($e) UnROT13 $e } `
         { param($e) Test-CheatMatch (UnROT13 $e).ToLower() } `
-        { param($e) Is-UAFalsePositive (UnROT13 $e) } `
-        15 25 "UserAssist"
+        { param($e) Is-UAFalsePositive (UnROT13 $e) } 15 25 "UserAssist"
     Write-Host ""
 
+    # Shimcache delta
     $prevShim    = @($previous.Shimcache | ForEach-Object { $_.Path })
     $currShim    = @($current.Shimcache  | ForEach-Object { $_.Path })
     $shimDeleted = @($prevShim | Where-Object { $currShim -notcontains $_ })
@@ -1093,7 +1044,7 @@ function Compare-Snapshots($previous, $current) {
             $m = Test-CheatMatch $entry.ToLower()
             Write-DeltaHit "Shimcache ADDED -- HIT: $entry matches '$m'"
             Add-Finding "SnapshotDelta" "Shimcache-Added-Hit" $entry $m $null "Snapshot Delta" 20
-            $deltaFindings.Add([PSCustomObject]@{ Category="Shimcache"; Change="ADDED-HIT"; Entry=$entry; FullPath=$entry; Note="HIT MATCH: $m" })
+            $deltaFindings.Add([PSCustomObject]@{ Category="Shimcache"; Change="ADDED-HIT"; Entry=$entry; FullPath=$entry; Note="HIT: $m" })
             $hits++
         }
         foreach ($entry in ($shimDeleted | Sort-Object)) {
@@ -1110,6 +1061,7 @@ function Compare-Snapshots($previous, $current) {
     }
     Write-Host ""
 
+    # Prefetch delta
     $prevPF    = @($previous.Prefetch | ForEach-Object { $_.Name })
     $currPF    = @($current.Prefetch  | ForEach-Object { $_.Name })
     $pfDeleted = @($prevPF | Where-Object { $currPF -notcontains $_ })
@@ -1119,36 +1071,29 @@ function Compare-Snapshots($previous, $current) {
     if ($pfDeleted.Count -eq 0 -and $pfAdded.Count -eq 0) {
         Write-DeltaClean "Prefetch: No changes"
     } else {
-        foreach ($pf in ($pfAdded | Where-Object {
-            $base = [System.IO.Path]::GetFileNameWithoutExtension($_)
-            $exe  = if ($base -match '^(.+)-[0-9A-F]{8}$') { $Matches[1] } else { $base }
-            $null -ne (Test-CheatMatch $exe.ToLower())
-        } | Sort-Object)) {
+        foreach ($pf in ($pfAdded | Sort-Object)) {
             $base = [System.IO.Path]::GetFileNameWithoutExtension($pf)
             $exe  = if ($base -match '^(.+)-[0-9A-F]{8}$') { $Matches[1] } else { $base }
             $m    = Test-CheatMatch $exe.ToLower()
-            Write-DeltaHit "Prefetch ADDED -- HIT: $exe matches '$m'"
-            Add-Finding "SnapshotDelta" "Prefetch-Added-Hit" $exe $pf $null "Snapshot Delta" 30
-            $deltaFindings.Add([PSCustomObject]@{ Category="Prefetch"; Change="ADDED-HIT"; Entry=$exe; FullPath=$pf; Note="HIT MATCH: $m" })
-            $hits++
+            if ($m) {
+                Write-DeltaHit "Prefetch ADDED -- HIT: $exe matches '$m'"
+                Add-Finding "SnapshotDelta" "Prefetch-Added-Hit" $exe $pf $null "Snapshot Delta" 30
+                $deltaFindings.Add([PSCustomObject]@{ Category="Prefetch"; Change="ADDED-HIT"; Entry=$exe; FullPath=$pf; Note="HIT: $m" })
+                $hits++
+            } else {
+                Write-DeltaBlue "Prefetch ADDED (clean): $exe"
+                $deltaFindings.Add([PSCustomObject]@{ Category="Prefetch"; Change="ADDED"; Entry=$exe; FullPath=$pf; Note="New -- no match" })
+            }
         }
         foreach ($pf in ($pfDeleted | Sort-Object)) {
             $base = [System.IO.Path]::GetFileNameWithoutExtension($pf)
             $exe  = if ($base -match '^(.+)-[0-9A-F]{8}$') { $Matches[1] } else { $base }
             Write-Delta "Prefetch DELETED: $exe"
             $findings["SnapshotDelta"].Add([PSCustomObject]@{ Type="Prefetch-Deleted"; Detail=$exe; Value=$pf; Timestamp=(Get-Date).ToString("yyyy-MM-dd HH:mm:ss") })
+            $deltaFindings.Add([PSCustomObject]@{ Category="Prefetch"; Change="DELETED"; Entry=$exe; FullPath=$pf; Note="Was present -- now gone" })
             $m = Test-CheatMatch $exe.ToLower()
             DeductCheat "Snapshot Delta" $(if ($m) { 25 } else { 10 })
             $hits++
-        }
-        foreach ($pf in ($pfAdded | Where-Object {
-            $base = [System.IO.Path]::GetFileNameWithoutExtension($_)
-            $exe  = if ($base -match '^(.+)-[0-9A-F]{8}$') { $Matches[1] } else { $base }
-            $null -eq (Test-CheatMatch $exe.ToLower())
-        } | Sort-Object)) {
-            $base = [System.IO.Path]::GetFileNameWithoutExtension($pf)
-            $exe  = if ($base -match '^(.+)-[0-9A-F]{8}$') { $Matches[1] } else { $base }
-            Write-DeltaBlue "Prefetch ADDED (clean): $exe"
         }
     }
 
@@ -1163,7 +1108,7 @@ function Compare-Snapshots($previous, $current) {
 }
 
 # =====================================================
-# THREAD START ADDRESS SCAN
+# WIN32 DETECTION FUNCTIONS
 # =====================================================
 function Get-SuspiciousThreads($targetPid) {
     $results = [System.Collections.Generic.List[object]]::new()
@@ -1173,21 +1118,18 @@ function Get-SuspiciousThreads($targetPid) {
         $entry        = New-Object Win32Thread+THREADENTRY32
         $entry.dwSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($entry)
         $hProc        = [Win32Mem]::OpenProcess(
-            [Win32Mem]::PROCESS_VM_READ -bor [Win32Mem]::PROCESS_QUERY_INFORMATION,
-            $false, $targetPid)
+            [Win32Mem]::PROCESS_VM_READ -bor [Win32Mem]::PROCESS_QUERY_INFORMATION, $false, $targetPid)
         if ($hProc -eq [IntPtr]::Zero) { return $results }
         try {
             $ok = [Win32Thread]::Thread32First($snap, [ref]$entry)
             while ($ok) {
                 if ([int]$entry.th32OwnerProcessID -eq $targetPid) {
-                    $hThread = [Win32Thread]::OpenThread(
-                        [Win32Thread]::THREAD_QUERY_INFORMATION, $false, $entry.th32ThreadID)
+                    $hThread = [Win32Thread]::OpenThread([Win32Thread]::THREAD_QUERY_INFORMATION, $false, $entry.th32ThreadID)
                     if ($hThread -ne [IntPtr]::Zero -and $hThread.ToInt64() -ne -1) {
                         try {
                             $startAddr = [IntPtr]::Zero
                             $retLen    = 0
-                            $status    = [Win32Thread]::NtQueryInformationThread(
-                                $hThread, 9, [ref]$startAddr, [IntPtr]::Size, [ref]$retLen)
+                            $status    = [Win32Thread]::NtQueryInformationThread($hThread, 9, [ref]$startAddr, [IntPtr]::Size, [ref]$retLen)
                             if ($status -eq 0 -and $startAddr -ne [IntPtr]::Zero) {
                                 $mbi     = New-Object Win32Mem+MEMORY_BASIC_INFORMATION
                                 $mbiSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($mbi)
@@ -1216,20 +1158,15 @@ function Get-SuspiciousThreads($targetPid) {
     return $results
 }
 
-# =====================================================
-# PROCESS HOLLOWING DETECTION
-# =====================================================
 function Test-ProcessHollowing($procPid) {
     $hProc = [Win32Mem]::OpenProcess(
-        [Win32Mem]::PROCESS_VM_READ -bor [Win32Mem]::PROCESS_QUERY_INFORMATION,
-        $false, $procPid)
+        [Win32Mem]::PROCESS_VM_READ -bor [Win32Mem]::PROCESS_QUERY_INFORMATION, $false, $procPid)
     if ($hProc -eq [IntPtr]::Zero) { return $false }
     try {
         $pbi    = New-Object Win32Hollow+PROCESS_BASIC_INFORMATION
         $retLen = 0
         $status = [Win32Hollow]::NtQueryInformationProcess(
-            $hProc, 0, [ref]$pbi,
-            [System.Runtime.InteropServices.Marshal]::SizeOf($pbi), [ref]$retLen)
+            $hProc, 0, [ref]$pbi, [System.Runtime.InteropServices.Marshal]::SizeOf($pbi), [ref]$retLen)
         if ($status -ne 0 -or $pbi.PebBaseAddress -eq [IntPtr]::Zero) { return $false }
         $pebImageOffset = [IntPtr]($pbi.PebBaseAddress.ToInt64() + 0x10)
         $imageBaseBuf   = New-Object byte[] 8
@@ -1246,9 +1183,6 @@ function Test-ProcessHollowing($procPid) {
     } finally { [Win32Mem]::CloseHandle($hProc) | Out-Null }
 }
 
-# =====================================================
-# NAMED PIPE ENUMERATION
-# =====================================================
 function Get-SuspiciousNamedPipes {
     $results = [System.Collections.Generic.List[object]]::new()
     try {
@@ -1265,16 +1199,11 @@ function Get-SuspiciousNamedPipes {
                 if ($pipe -like "*$($gp.ToLower())*") { $matched = "(generic: $gp)"; break }
             }
         }
-        if ($matched) {
-            $results.Add([PSCustomObject]@{ PipeName = $pipe; Match = $matched })
-        }
+        if ($matched) { $results.Add([PSCustomObject]@{ PipeName = $pipe; Match = $matched }) }
     }
     return $results
 }
 
-# =====================================================
-# HANDLE-OPEN DETECTION
-# =====================================================
 function Get-ProcessesWithRobloxHandle {
     $results    = [System.Collections.Generic.List[object]]::new()
     $robloxPids = @(Get-Process -ErrorAction SilentlyContinue |
@@ -1287,14 +1216,12 @@ function Get-ProcessesWithRobloxHandle {
         $buf     = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bufSize)
         try {
             $retLen = 0
-            $status = [Win32Handle]::NtQuerySystemInformation(
-                [Win32Handle]::SystemHandleInformation, $buf, $bufSize, [ref]$retLen)
+            $status = [Win32Handle]::NtQuerySystemInformation([Win32Handle]::SystemHandleInformation, $buf, $bufSize, [ref]$retLen)
             if ($status -eq -1073741820 -and $retLen -gt 0) {
                 [System.Runtime.InteropServices.Marshal]::FreeHGlobal($buf)
                 $bufSize = $retLen + 0x10000
                 $buf     = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bufSize)
-                $status  = [Win32Handle]::NtQuerySystemInformation(
-                    [Win32Handle]::SystemHandleInformation, $buf, $bufSize, [ref]$retLen)
+                $status  = [Win32Handle]::NtQuerySystemInformation([Win32Handle]::SystemHandleInformation, $buf, $bufSize, [ref]$retLen)
             }
             if ($status -ne 0) { return $results }
             $handleCount = [System.Runtime.InteropServices.Marshal]::ReadInt32($buf, 0)
@@ -1315,16 +1242,13 @@ function Get-ProcessesWithRobloxHandle {
                 if ($hOwner -eq [IntPtr]::Zero) { continue }
                 try {
                     $dupHandle = [IntPtr]::Zero
-                    $dup = [Win32Handle]::DuplicateHandle(
-                        $hOwner, [IntPtr]$sh.Handle, $currentProc,
-                        [ref]$dupHandle, 0x0400, $false, 0)
+                    $dup = [Win32Handle]::DuplicateHandle($hOwner, [IntPtr]$sh.Handle, $currentProc, [ref]$dupHandle, 0x0400, $false, 0)
                     if (-not $dup -or $dupHandle -eq [IntPtr]::Zero) { continue }
                     try {
                         $targetPid = [Win32Handle]::GetProcessId($dupHandle)
                         if ($robloxPids -contains $targetPid) {
                             $key = "$ownerPid-$targetPid"
-                            if (-not $seen.Contains($key)) {
-                                $seen.Add($key) | Out-Null
+                            if ($seen.Add($key)) {
                                 $ownerProc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
                                 $ownerName = if ($ownerProc) { $ownerProc.ProcessName } else { "(pid $ownerPid)" }
                                 $ownerPath = ""
@@ -1351,11 +1275,6 @@ function Get-ProcessesWithRobloxHandle {
     return $results
 }
 
-# =====================================================
-# MEMORY SCAN -- PRIVATE REGIONS ONLY
-# StringHits = confirmed cheat strings
-# SuspiciousHits = API strings Roblox itself may use
-# =====================================================
 function Scan-RobloxProcessMemory($procPid, $pname, $ppath) {
     $res = [PSCustomObject]@{
         PID            = $procPid
@@ -1369,8 +1288,7 @@ function Scan-RobloxProcessMemory($procPid, $pname, $ppath) {
         Error          = $null
     }
     $hProc = [Win32Mem]::OpenProcess(
-        [Win32Mem]::PROCESS_VM_READ -bor [Win32Mem]::PROCESS_QUERY_INFORMATION,
-        $false, $procPid)
+        [Win32Mem]::PROCESS_VM_READ -bor [Win32Mem]::PROCESS_QUERY_INFORMATION, $false, $procPid)
     if ($hProc -eq [IntPtr]::Zero) { $res.Error = "Access denied"; return $res }
     try {
         $si = New-Object Win32Mem+SYSTEM_INFO
@@ -1395,18 +1313,16 @@ function Scan-RobloxProcessMemory($procPid, $pname, $ppath) {
                 if ($isExec -and $isPrivate -and -not $guarded -and -not $noaccess) {
                     $res.UnbackedExec.Add([PSCustomObject]@{
                         Address    = "0x$($mbi.BaseAddress.ToInt64().ToString('X16'))"
-                        Size       = $size
                         SizeKB     = [math]::Round($size / 1KB, 1)
                         Protection = Get-ProtectionName $protect
                     })
                 }
                 $readable = ($protect -band 0xFE) -ne 0
                 if ($readable -and $isPrivate -and -not $guarded -and -not $noaccess -and $size -gt 0) {
-                    $rs  = [math]::Min($size, $maxReadSize)
-                    if ($rs -gt [int]::MaxValue) { $rs = [int]::MaxValue }
-                    $buf = New-Object byte[] ([int]$rs)
+                    $rs  = [int][math]::Min($size, $maxReadSize)
+                    $buf = New-Object byte[] $rs
                     $br  = 0
-                    $ok  = [Win32Mem]::ReadProcessMemory($hProc, $mbi.BaseAddress, $buf, [int]$rs, [ref]$br)
+                    $ok  = [Win32Mem]::ReadProcessMemory($hProc, $mbi.BaseAddress, $buf, $rs, [ref]$br)
                     if ($ok -and $br -gt 0) {
                         $res.ScannedBytes += $br
                         $total += $br
@@ -1420,7 +1336,7 @@ function Scan-RobloxProcessMemory($procPid, $pname, $ppath) {
                                 SizeKB  = [math]::Round($br / 1KB, 1)
                             }
                             if (Test-SuspiciousMemString $h) { $res.SuspiciousHits.Add($hitObj) }
-                            else                             { $res.StringHits.Add($hitObj)     }
+                            else                             { $res.StringHits.Add($hitObj) }
                         }
                     }
                 }
@@ -1444,7 +1360,6 @@ function Scan-PrefetchParallel($pfFiles, $cutoff, $scanDaysBack, $exactTermsArg,
 
     $workerScript = {
         param($pf, $cutoff, $scanDaysBack, $exactTerms, $globalFPPatterns)
-
         function Get-PfTimestamps($path) {
             $times = [System.Collections.Generic.List[DateTime]]::new()
             try {
@@ -1462,43 +1377,32 @@ function Scan-PrefetchParallel($pfFiles, $cutoff, $scanDaysBack, $exactTermsArg,
                     }
                 } else {
                     $ft = [System.BitConverter]::ToInt64($bytes, 128)
-                    if ($ft -gt 0 -and $ft -lt 999999999999999999L) {
-                        $times.Add([DateTime]::FromFileTimeUtc($ft).ToLocalTime())
-                    }
+                    if ($ft -gt 0 -and $ft -lt 999999999999999999L) { $times.Add([DateTime]::FromFileTimeUtc($ft).ToLocalTime()) }
                 }
             } catch {}
             return $times
         }
-
         $base      = [System.IO.Path]::GetFileNameWithoutExtension($pf.Name)
         $exeName   = if ($base -match '^(.+)-[0-9A-F]{8}$') { $Matches[1] } else { $base }
         $ts        = Get-PfTimestamps $pf.FullName
         $lastRunDt = if ($ts.Count -gt 0) { $ts[0] } else { $pf.LastWriteTime }
-
         if ($scanDaysBack -lt 9999 -and $lastRunDt -lt $cutoff) { return $null }
-
         $lower = $exeName.ToLower()
         $isFP  = $false
         foreach ($p in $globalFPPatterns) { if ($lower -like "*$($p.ToLower())*") { $isFP = $true; break } }
-
         $matchedTerm = $null
         if (-not $isFP) {
             foreach ($term in $exactTerms) {
                 $t = $term.ToLower()
-                if ($lower -eq $t -or ($t.Length -gt 5 -and $lower -like "*$t*")) {
-                    $matchedTerm = $term; break
-                }
+                if ($lower -eq $t -or ($t.Length -gt 5 -and $lower -like "*$t*")) { $matchedTerm = $term; break }
             }
         }
-
         return [PSCustomObject]@{
             FileName    = $pf.Name
             Exe         = $exeName
             SizeKB      = [math]::Round($pf.Length / 1KB, 2)
             LastRun     = $lastRunDt.ToString("yyyy-MM-dd HH:mm:ss")
-            AllRunTimes = if ($ts.Count -gt 1) {
-                            ($ts | ForEach-Object { $_.ToString("yyyy-MM-dd HH:mm:ss") }) -join " | "
-                          } else { $lastRunDt.ToString("yyyy-MM-dd HH:mm:ss") }
+            AllRunTimes = if ($ts.Count -gt 1) { ($ts | ForEach-Object { $_.ToString("yyyy-MM-dd HH:mm:ss") }) -join " | " } else { $lastRunDt.ToString("yyyy-MM-dd HH:mm:ss") }
             RunCount    = $ts.Count
             Match       = $matchedTerm
             Flagged     = ($null -ne $matchedTerm)
@@ -1508,7 +1412,7 @@ function Scan-PrefetchParallel($pfFiles, $cutoff, $scanDaysBack, $exactTermsArg,
     foreach ($pf in $pfFiles) {
         $ps = [PowerShell]::Create()
         $ps.RunspacePool = $pool
-        $ps.AddScript($workerScript)          | Out-Null
+        $ps.AddScript($workerScript) | Out-Null
         $ps.AddArgument($pf)                  | Out-Null
         $ps.AddArgument($cutoff)              | Out-Null
         $ps.AddArgument($scanDaysBack)        | Out-Null
@@ -1516,29 +1420,20 @@ function Scan-PrefetchParallel($pfFiles, $cutoff, $scanDaysBack, $exactTermsArg,
         $ps.AddArgument($globalFPPatternsArg) | Out-Null
         $jobs.Add(@{ PS = $ps; Handle = $ps.BeginInvoke() })
     }
-
     foreach ($job in $jobs) {
-        try {
-            $res = $job.PS.EndInvoke($job.Handle)
-            if ($res -and $res[0]) { $results.Add($res[0]) }
-        } catch {}
+        try { $res = $job.PS.EndInvoke($job.Handle); if ($res -and $res[0]) { $results.Add($res[0]) } } catch {}
         $job.PS.Dispose()
     }
-
-    $pool.Close()
-    $pool.Dispose()
+    $pool.Close(); $pool.Dispose()
     return $results
 }
-
 # =====================================================
 # SECTION 1 -- SYSTEM PROTECTION
-# Defender, Memory Integrity, AMSI, WMI Subscriptions
 # =====================================================
 function Run-Section1 {
     Write-Header "SECTION 1 -- SYSTEM PROTECTION" "Cyan"
     $hits = 0
 
-    # Defender status
     Write-Info "Checking Windows Defender status..."
     try {
         $mpStatus = Get-MpComputerStatus -ErrorAction Stop
@@ -1561,17 +1456,14 @@ function Run-Section1 {
             Add-Finding "SystemProtection" "TamperDisabled" "Tamper protection disabled" "" "Defender Status" $null 20
             $hits++
         }
-    } catch {
-        Write-Warn "Could not query Defender status: $_"
-    }
+    } catch { Write-Warn "Could not query Defender status" }
 
-    # Defender exclusions
     Write-Info "Checking Defender exclusions..."
     try {
         $prefs = Get-MpPreference -ErrorAction Stop
         $allExclusions = @(
-            ($prefs.ExclusionPath    | ForEach-Object { @{ Type="Path";      Value=$_ } }),
-            ($prefs.ExclusionProcess | ForEach-Object { @{ Type="Process";   Value=$_ } }),
+            ($prefs.ExclusionPath      | ForEach-Object { @{ Type="Path";      Value=$_ } }),
+            ($prefs.ExclusionProcess   | ForEach-Object { @{ Type="Process";   Value=$_ } }),
             ($prefs.ExclusionExtension | ForEach-Object { @{ Type="Extension"; Value=$_ } })
         ) | ForEach-Object { $_ } | Where-Object { $_.Value }
 
@@ -1592,22 +1484,18 @@ function Run-Section1 {
         }
     } catch { Write-Warn "Could not query Defender exclusions" }
 
-    # Memory Integrity (HVCI)
     Write-Info "Checking Memory Integrity (HVCI)..."
-    try {
-        $hvciKey = "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity"
-        if (Test-Path $hvciKey) {
-            $hvci = (Get-ItemProperty $hvciKey -ErrorAction Stop).Enabled
-            if ($hvci -eq 1) { Write-OK "Memory Integrity: Enabled" }
-            else {
-                Write-Warn "Memory Integrity: Disabled"
-                Add-Finding "SystemProtection" "HVCIDisabled" "Memory Integrity off" "" "Memory Integrity" $null 15
-                $hits++
-            }
-        } else { Write-Info "Memory Integrity key not found" }
-    } catch { Write-Warn "Could not query Memory Integrity" }
+try {
+    $dg = Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard -ErrorAction Stop
+    if ($dg -and ($dg.SecurityServicesRunning -contains 2)) {
+        Write-OK "Memory Integrity: Active and enforced"
+    } else {
+        Write-Fail "Memory Integrity: NOT actively enforced at runtime"
+        Add-Finding "SystemProtection" "HVCIDisabled" "Memory Integrity not enforced" "" "Memory Integrity" $null 15
+        $hits++
+    }
+} catch { Write-Warn "Could not query Memory Integrity via Win32_DeviceGuard" }
 
-    # Driver blocklist
     Write-Info "Checking vulnerable driver blocklist..."
     try {
         $blKey = "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Config"
@@ -1622,7 +1510,6 @@ function Run-Section1 {
         }
     } catch {}
 
-    # AMSI integrity
     Write-Info "Checking AMSI providers..."
     try {
         $amsiKey = "HKLM:\SOFTWARE\Microsoft\AMSI\Providers"
@@ -1634,27 +1521,25 @@ function Run-Section1 {
                 Add-Finding "SystemProtection" "AMSIStripped" "No AMSI providers" "" "AMSI Integrity" $null 50
                 $hits++
             }
-        }
+        } else { Write-Info "AMSI providers key not found" }
     } catch {}
 
-    # WMI subscriptions
     Write-Info "Checking WMI event subscriptions..."
     try {
         $consumers = Get-WMIObject -Namespace root\subscription -Class __EventConsumer -ErrorAction Stop
+        $wmiHits = 0
         foreach ($c in $consumers) {
             $name = $c.Name
             $isFP = $false
-            foreach ($kw in $knownWmiConsumers) {
-                if ($name -like "*$kw*") { $isFP = $true; break }
-            }
+            foreach ($kw in $knownWmiConsumers) { if ($name -like "*$kw*") { $isFP = $true; break } }
             if (-not $isFP) {
                 Write-Hit "Suspicious WMI consumer: $name"
                 Add-Finding "Persistence" "WMIConsumer" $name "" $null "Persistence" 40
                 Add-Timeline "WMI persistence consumer: $name"
-                $hits++
+                $wmiHits++; $hits++
             } else { Write-Info "WMI consumer (known): $name" }
         }
-        if ($hits -eq 0) { Write-OK "No suspicious WMI subscriptions" }
+        if ($wmiHits -eq 0) { Write-OK "No suspicious WMI subscriptions" }
     } catch { Write-Info "WMI subscription check skipped" }
 
     Write-SectionResult $hits
@@ -1668,10 +1553,10 @@ function Run-Section2 {
     Write-Header "SECTION 2 -- NETWORK & DNS" "Cyan"
     $hits = 0
 
-    # Active connections
     Write-Info "Checking active network connections..."
     try {
         $conns = Get-NetTCPConnection -State Established,TimeWait -ErrorAction Stop
+        $connHits = 0
         foreach ($conn in $conns) {
             $remote = $conn.RemoteAddress
             $port   = $conn.RemotePort
@@ -1679,22 +1564,22 @@ function Run-Section2 {
                 if ($remote -like "*$domain*") {
                     Write-Hit "Active connection to suspicious domain: $remote : $port"
                     Add-Finding "NetworkDNS" "SuspConnection" "$remote : $port" $domain $null "Network Activity" 50
-                    $hits++
+                    $connHits++; $hits++
                 }
             }
             if ($suspiciousPorts -contains $port) {
                 Write-Warn "Connection on suspicious port: $remote : $port"
                 Add-Finding "NetworkDNS" "SuspPort" "$remote : $port" $port $null "Network Activity" 20
-                $hits++
+                $connHits++; $hits++
             }
         }
-        if ($hits -eq 0) { Write-OK "No suspicious active connections" }
+        if ($connHits -eq 0) { Write-OK "No suspicious active connections" }
     } catch { Write-Warn "Could not query TCP connections" }
 
-    # DNS cache
     Write-Info "Checking DNS cache..."
     try {
         $dnsCache = Get-DnsClientCache -ErrorAction Stop
+        $dnsHits  = 0
         foreach ($entry in $dnsCache) {
             $name = $entry.Entry.ToLower()
             foreach ($domain in $suspiciousDomains) {
@@ -1702,17 +1587,17 @@ function Run-Section2 {
                     Write-Hit "DNS cache HIT: $name"
                     Add-Finding "NetworkDNS" "DNSCache" $name $domain $null "Network Activity" 40
                     Add-Timeline "DNS cache: $name"
-                    $hits++
+                    $dnsHits++; $hits++
                 }
             }
         }
-        if ($hits -eq 0) { Write-OK "No suspicious DNS cache entries" }
+        if ($dnsHits -eq 0) { Write-OK "No suspicious DNS cache entries" }
     } catch { Write-Info "DNS cache check skipped" }
 
-    # Hosts file
     Write-Info "Checking hosts file for redirects..."
     $hostsPath = "C:\Windows\System32\drivers\etc\hosts"
     if (Test-Path $hostsPath) {
+        $hostsHits  = 0
         $hostsLines = Get-Content $hostsPath -ErrorAction SilentlyContinue |
             Where-Object { $_ -notmatch "^\s*#" -and $_.Trim() -ne "" }
         foreach ($line in $hostsLines) {
@@ -1720,11 +1605,11 @@ function Run-Section2 {
                 if ($line -like "*$domain*") {
                     Write-Warn "Hosts file entry for suspicious domain: $line"
                     Add-Finding "NetworkDNS" "HostsEntry" $line $domain $null "Network Activity" 25
-                    $hits++
+                    $hostsHits++; $hits++
                 }
             }
         }
-        if ($hits -eq 0) { Write-OK "Hosts file: No suspicious entries" }
+        if ($hostsHits -eq 0) { Write-OK "Hosts file: No suspicious entries" }
     }
 
     Write-SectionResult $hits
@@ -1732,34 +1617,34 @@ function Run-Section2 {
 }
 
 # =====================================================
-# SECTION 3 -- FILESYSTEM EXECUTION
-# MUICache, Shimcache, BAM, Prefetch, PE header checks
+# SECTION 3 -- FILESYSTEM EXECUTION ARTIFACTS
 # =====================================================
 function Run-Section3 {
     Write-Header "SECTION 3 -- FILESYSTEM EXECUTION ARTIFACTS" "Cyan"
     $hits = 0
 
-    # MUICache
     Write-Info "Scanning MUICache..."
+    $before = $hits
     try {
         $muiPath = "HKCU:\SOFTWARE\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"
         $mui     = Get-ItemProperty $muiPath -ErrorAction Stop
         $mui.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
             $entry = $_.Name
-            if (Is-MUIFalsePositive $entry) { return }
-            $match = Test-CheatMatch $entry.ToLower()
-            if ($match) {
-                Write-Hit "MUICache HIT: $entry -- matches '$match'"
-                Add-Finding "FilesystemExecution" "MUICache" $entry $match $null "Filesystem Execution" 30
-                Add-Timeline "MUICache hit: $entry"
-                $hits++
+            if (-not (Is-MUIFalsePositive $entry)) {
+                $match = Test-CheatMatch $entry.ToLower()
+                if ($match) {
+                    Write-Hit "MUICache HIT: $entry -- matches '$match'"
+                    Add-Finding "FilesystemExecution" "MUICache" $entry $match $null "Filesystem Execution" 30
+                    Add-Timeline "MUICache hit: $entry"
+                    $hits++
+                }
             }
         }
-        if ($hits -eq 0) { Write-OK "MUICache: No suspicious entries" }
+        if ($hits -eq $before) { Write-OK "MUICache: No suspicious entries" }
     } catch { Write-Warn "MUICache scan failed" }
 
-    # UserAssist
     Write-Info "Scanning UserAssist..."
+    $before = $hits
     try {
         $uaBase = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist"
         foreach ($k in @(Get-ChildItem $uaBase -ErrorAction SilentlyContinue)) {
@@ -1769,54 +1654,53 @@ function Run-Section3 {
             if (-not $props) { continue }
             $props.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
                 $decoded = UnROT13 $_.Name
-                if (Is-UAFalsePositive $decoded) { return }
-                $match = Test-CheatMatch $decoded.ToLower()
-                if ($match) {
-                    Write-Hit "UserAssist HIT: $decoded -- matches '$match'"
-                    Add-Finding "FilesystemExecution" "UserAssist" $decoded $match $null "Filesystem Execution" 30
-                    Add-Timeline "UserAssist hit: $decoded"
-                    $hits++
+                if (-not (Is-UAFalsePositive $decoded)) {
+                    $match = Test-CheatMatch $decoded.ToLower()
+                    if ($match) {
+                        Write-Hit "UserAssist HIT: $decoded -- matches '$match'"
+                        Add-Finding "FilesystemExecution" "UserAssist" $decoded $match $null "Filesystem Execution" 30
+                        Add-Timeline "UserAssist hit: $decoded"
+                        $hits++
+                    }
                 }
             }
         }
-        if ($hits -eq 0) { Write-OK "UserAssist: No suspicious entries" }
+        if ($hits -eq $before) { Write-OK "UserAssist: No suspicious entries" }
     } catch { Write-Warn "UserAssist scan failed" }
 
-    # Shimcache
     Write-Info "Scanning Shimcache..."
+    $before = $hits
     try {
         $shimPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\AppCompatCache"
         $shimRaw  = (Get-ItemProperty $shimPath -ErrorAction Stop).AppCompatCache
         if ($shimRaw -and $shimRaw.Length -gt 16) {
-            $ustr  = [System.Text.Encoding]::Unicode.GetString($shimRaw)
-            $seen  = [System.Collections.Generic.HashSet[string]]::new()
-            $mlist = [regex]::Matches($ustr, '[A-Za-z]:\\[^\x00-\x1F"<>|]{4,200}')
-            foreach ($m in $mlist) {
-                $val = $m.Value.Trim() -replace "[^\x20-\x7E]",""
-                if ($val.Length -lt 5 -or $seen.Contains($val)) { continue }
-                $seen.Add($val) | Out-Null
-                if ($script:shimFPRegex.IsMatch($val)) { continue }
-                $match = Test-CheatMatch $val.ToLower()
-                if ($match) {
-                    Write-Hit "Shimcache HIT: $val -- matches '$match'"
-                    Add-Finding "FilesystemExecution" "Shimcache" $val $match $null "Filesystem Execution" 25
-                    Add-Timeline "Shimcache hit: $val"
-                    $hits++
+            $ustr = [System.Text.Encoding]::Unicode.GetString($shimRaw)
+            $seen = [System.Collections.Generic.HashSet[string]]::new()
+            [regex]::Matches($ustr, '[A-Za-z]:\\[^\x00-\x1F"<>|]{4,200}') | ForEach-Object {
+                $val = $_.Value.Trim() -replace "[^\x20-\x7E]",""
+                if ($val.Length -ge 5 -and $seen.Add($val) -and -not $script:shimFPRegex.IsMatch($val)) {
+                    $match = Test-CheatMatch $val.ToLower()
+                    if ($match) {
+                        Write-Hit "Shimcache HIT: $val -- matches '$match'"
+                        Add-Finding "FilesystemExecution" "Shimcache" $val $match $null "Filesystem Execution" 25
+                        Add-Timeline "Shimcache hit: $val"
+                        $hits++
+                    }
                 }
             }
         }
-        if ($hits -eq 0) { Write-OK "Shimcache: No suspicious entries" }
+        if ($hits -eq $before) { Write-OK "Shimcache: No suspicious entries" }
     } catch { Write-Warn "Shimcache scan failed" }
 
-    # BAM
     Write-Info "Scanning BAM (Background Activity Monitor)..."
+    $before = $hits
     try {
         $bamBase = "HKLM:\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings"
         if (Test-Path $bamBase) {
             $tz   = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" -ErrorAction SilentlyContinue
             $bias = if ($tz -and $null -ne $tz.ActiveTimeBias) { [int64]$tz.ActiveTimeBias } else { 0L }
             foreach ($bk in @(Get-ChildItem $bamBase -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -ne "S-1-5-18" })) {
-                $regKey    = Get-Item $bk.PSPath -ErrorAction SilentlyContinue
+                $regKey = Get-Item $bk.PSPath -ErrorAction SilentlyContinue
                 if (-not $regKey) { continue }
                 $propNames = try { $regKey.GetValueNames() } catch { @() }
                 foreach ($prop in $propNames) {
@@ -1824,39 +1708,35 @@ function Run-Section3 {
                     try {
                         $raw = $regKey.GetValue($prop)
                         if (-not $raw -or $raw -isnot [byte[]] -or $raw.Length -lt 8) { continue }
-                        $ft  = [System.BitConverter]::ToInt64($raw[0..7], 0)
+                        $ft = [System.BitConverter]::ToInt64($raw[0..7], 0)
                         if ($ft -le 0 -or $ft -gt 999999999999999999) { continue }
-                        $lr  = [DateTime]::FromFileTimeUtc($ft).AddMinutes(-$bias)
+                        $lr = [DateTime]::FromFileTimeUtc($ft).AddMinutes(-$bias)
                         if ($script:ScanDaysBack -lt 9999 -and $lr -lt $script:ScanCutoff) { continue }
                         $lrStr = $lr.ToString("yyyy-MM-dd HH:mm:ss")
 
-                        $bamViewerData.Add([PSCustomObject]@{
-                            Path    = $prop
-                            LastRun = $lrStr
-                            SID     = $bk.PSChildName
-                            Flagged = $false
-                            Match   = ""
-                        })
+                        $bamEntry = [PSCustomObject]@{ Path = $prop; LastRun = $lrStr; SID = $bk.PSChildName; Flagged = $false; Match = "" }
+                        $bamViewerData.Add($bamEntry)
 
-                        if (Is-BAMFalsePositive $prop) { continue }
-                        $match = Test-CheatMatch $prop.ToLower()
-                        if ($match) {
-                            Write-Hit "BAM HIT: $prop (last run: $lrStr) -- matches '$match'"
-                            Add-Finding "FilesystemExecution" "BAM" $prop $match $null "Filesystem Execution" 35
-                            Add-Timeline "BAM hit: $prop"
-                            $bamViewerData[-1].Flagged = $true
-                            $bamViewerData[-1].Match   = $match
-                            $hits++
+                        if (-not (Is-BAMFalsePositive $prop)) {
+                            $match = Test-CheatMatch $prop.ToLower()
+                            if ($match) {
+                                Write-Hit "BAM HIT: $prop (last run: $lrStr) -- matches '$match'"
+                                Add-Finding "FilesystemExecution" "BAM" $prop $match $null "Filesystem Execution" 35
+                                Add-Timeline "BAM hit: $prop"
+                                $bamEntry.Flagged = $true
+                                $bamEntry.Match   = $match
+                                $hits++
+                            }
                         }
                     } catch { continue }
                 }
             }
         }
-        if ($hits -eq 0) { Write-OK "BAM: No suspicious entries" }
+        if ($hits -eq $before) { Write-OK "BAM: No suspicious entries" }
     } catch { Write-Warn "BAM scan failed" }
 
-    # Prefetch (parallel)
     Write-Info "Scanning Prefetch (parallel)..."
+    $before = $hits
     $pfPath = "C:\Windows\Prefetch"
     if (Test-Path $pfPath) {
         $pfFiles = @(Get-ChildItem $pfPath -Filter "*.pf" -File -Force -ErrorAction SilentlyContinue)
@@ -1871,50 +1751,48 @@ function Run-Section3 {
                 $hits++
             }
         }
-        if ($hits -eq 0) { Write-OK "Prefetch: No suspicious entries" }
+        if ($hits -eq $before) { Write-OK "Prefetch: No suspicious entries" }
     } else { Write-Info "Prefetch directory not found" }
 
-    # Renamed cheat PE header check
     Write-Info "Checking for renamed cheat executables via PE header strings..."
+    $before = $hits
     $searchPaths = @(
-        "$env:TEMP",
-        "$env:LOCALAPPDATA\Temp",
-        "$env:APPDATA",
-        "$env:LOCALAPPDATA",
-        "$env:USERPROFILE\Downloads",
-        "$env:USERPROFILE\Desktop"
+        "$env:TEMP","$env:LOCALAPPDATA\Temp","$env:APPDATA","$env:LOCALAPPDATA",
+        "$env:USERPROFILE\Downloads","$env:USERPROFILE\Desktop"
     )
     foreach ($sp in $searchPaths) {
         if (-not (Test-Path $sp)) { continue }
         $exes = Get-ChildItem $sp -Filter "*.exe" -File -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTime -ge $script:ScanCutoff }
+            Where-Object { $script:ScanDaysBack -ge 9999 -or $_.LastWriteTime -ge $script:ScanCutoff }
         foreach ($exe in $exes) {
             try {
                 $bytes = [System.IO.File]::ReadAllBytes($exe.FullName)
                 if ($bytes.Length -lt 64) { continue }
-                $str = [System.Text.Encoding]::ASCII.GetString($bytes[0..([math]::Min($bytes.Length-1, 65535))])
+                $upTo = [math]::Min($bytes.Length - 1, 65535)
+                $str  = [System.Text.Encoding]::ASCII.GetString($bytes[0..$upTo])
+                if (Is-GlobalFP $exe.FullName) { continue }
                 foreach ($term in $exactTerms) {
                     if ($str.ToLower() -like "*$($term.ToLower())*") {
-                        if (-not (Is-GlobalFP $exe.FullName)) {
-                            Write-Hit "Renamed cheat PE: $($exe.FullName) contains string '$term'"
-                            Add-Finding "FilesystemExecution" "RenamedPE" $exe.FullName $term $null "Filesystem Execution" 50
-                            $hits++
-                            break
-                        }
+                        Write-Hit "Renamed cheat PE: $($exe.FullName) contains string '$term'"
+                        Add-Finding "FilesystemExecution" "RenamedPE" $exe.FullName $term $null "Filesystem Execution" 50
+                        Add-Timeline "Renamed cheat PE: $($exe.FullName)"
+                        $hits++
+                        break
                     }
                 }
             } catch { continue }
         }
     }
+    if ($hits -eq $before) { Write-OK "PE header scan: No renamed cheats found" }
 
-    # Generic-named exe in suspicious locations
     Write-Info "Checking for generic-named executables in suspicious locations..."
+    $before = $hits
     $suspLocations = @("$env:TEMP","$env:LOCALAPPDATA\Temp","$env:APPDATA")
     $genericNames  = @("update","updater","service","helper","loader","launcher","runner","install","setup","patch")
     foreach ($loc in $suspLocations) {
         if (-not (Test-Path $loc)) { continue }
         $exes = Get-ChildItem $loc -Filter "*.exe" -File -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTime -ge $script:ScanCutoff }
+            Where-Object { $script:ScanDaysBack -ge 9999 -or $_.LastWriteTime -ge $script:ScanCutoff }
         foreach ($exe in $exes) {
             $baseName = [System.IO.Path]::GetFileNameWithoutExtension($exe.Name).ToLower()
             if ($genericNames -contains $baseName -and -not (Is-GlobalFP $exe.FullName)) {
@@ -1927,6 +1805,7 @@ function Run-Section3 {
             }
         }
     }
+    if ($hits -eq $before) { Write-OK "Generic-name scan: No suspicious executables" }
 
     Write-SectionResult $hits
     return $hits
@@ -1934,14 +1813,11 @@ function Run-Section3 {
 
 # =====================================================
 # SECTION 4 -- PERSISTENCE
-# Registry run keys, startup folder, scheduled tasks,
-# hidden processes
 # =====================================================
 function Run-Section4 {
     Write-Header "SECTION 4 -- PERSISTENCE" "Cyan"
     $hits = 0
 
-    # Registry run keys
     $runKeys = @(
         "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run",
         "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce",
@@ -1950,57 +1826,60 @@ function Run-Section4 {
         "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"
     )
     Write-Info "Scanning registry run keys..."
+    $runHits = 0
     foreach ($key in $runKeys) {
         if (-not (Test-Path $key)) { continue }
         $props = Get-ItemProperty $key -ErrorAction SilentlyContinue
         if (-not $props) { continue }
         $props.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
             $val = $_.Value
-            if (Is-GlobalFP $val) { return }
-            $match = Test-CheatMatch $val.ToLower()
-            if ($match) {
-                Write-Hit "Run key HIT: [$($_.Name)] = $val -- matches '$match'"
-                Add-Finding "Persistence" "RunKey" $_.Name $val $null "Persistence" 45
-                Add-Timeline "Run key hit: $val"
-                $hits++
-            } else {
-                Write-Info "Run key: [$($_.Name)] = $val"
+            if ($val -and -not (Is-GlobalFP $val)) {
+                $match = Test-CheatMatch $val.ToLower()
+                if ($match) {
+                    Write-Hit "Run key HIT: [$($_.Name)] = $val -- matches '$match'"
+                    Add-Finding "Persistence" "RunKey" $_.Name $val $null "Persistence" 45
+                    Add-Timeline "Run key hit: $val"
+                    $runHits++
+                }
             }
         }
     }
-    if ($hits -eq 0) { Write-OK "Run keys: No suspicious entries" }
+    $hits += $runHits
+    if ($runHits -eq 0) { Write-OK "Run keys: No suspicious entries" }
 
-    # Startup folder
     Write-Info "Checking startup folders..."
+    $startupHits = 0
     $startupPaths = @(
         "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup",
         "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
     )
     foreach ($sp in $startupPaths) {
         if (-not (Test-Path $sp)) { continue }
-        $items = Get-ChildItem $sp -File -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTime -ge $script:ScanCutoff }
+        $items = Get-ChildItem $sp -File -Force -ErrorAction SilentlyContinue
         foreach ($item in $items) {
             if (Is-GlobalFP $item.FullName) { continue }
             $match = Test-CheatMatch $item.Name.ToLower()
             if ($match) {
                 Write-Hit "Startup folder HIT: $($item.FullName) -- matches '$match'"
                 Add-Finding "Persistence" "StartupFolder" $item.FullName $match $null "Persistence" 40
-                $hits++
+                Add-Timeline "Startup folder hit: $($item.FullName)"
+                $startupHits++
             } else {
                 Write-Warn "Startup folder item: $($item.FullName)"
-                Add-Finding "Persistence" "StartupItem" $item.FullName "" $null "Persistence" 10
+                Add-Finding "Persistence" "StartupItem" $item.FullName "" $null "Persistence" 5
             }
         }
     }
+    $hits += $startupHits
+    if ($startupHits -eq 0) { Write-OK "Startup folders: No cheat matches" }
 
-    # Scheduled tasks
     Write-Info "Scanning scheduled tasks..."
+    $taskHits = 0
     try {
         $tasks = Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.State -ne "Disabled" }
         foreach ($task in $tasks) {
             $taskName = $task.TaskName
-            $actions  = $task.Actions | ForEach-Object { $_.Execute + " " + $_.Arguments }
+            $actions  = $task.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)" }
             foreach ($action in $actions) {
                 if (-not $action -or (Is-GlobalFP $action)) { continue }
                 $match = Test-CheatMatch $action.ToLower()
@@ -2008,15 +1887,16 @@ function Run-Section4 {
                     Write-Hit "Scheduled task HIT: '$taskName' -> $action -- matches '$match'"
                     Add-Finding "Persistence" "ScheduledTask" $taskName $action $null "Persistence" 40
                     Add-Timeline "Scheduled task hit: $taskName"
-                    $hits++
+                    $taskHits++
                 }
             }
         }
-        if ($hits -eq 0) { Write-OK "Scheduled tasks: No suspicious entries" }
     } catch { Write-Warn "Scheduled task scan failed" }
+    $hits += $taskHits
+    if ($taskHits -eq 0) { Write-OK "Scheduled tasks: No suspicious entries" }
 
-    # Hidden processes
     Write-Info "Checking for hidden processes (WMI vs Get-Process delta)..."
+    $hiddenHits = 0
     try {
         $wmiProcs  = @(Get-WmiObject Win32_Process -ErrorAction Stop | Select-Object -ExpandProperty ProcessId)
         $psProcs   = @(Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
@@ -2026,24 +1906,24 @@ function Run-Section4 {
             if ($wmiProc) {
                 Write-Warn "Potentially hidden process: $($wmiProc.Name) (PID $hid)"
                 Add-Finding "Persistence" "HiddenProcess" $wmiProc.Name "PID:$hid" $null "Persistence" 35
-                $hits++
+                $hiddenHits++
             }
         }
-        if ($hiddenIds.Count -eq 0) { Write-OK "No hidden processes detected" }
     } catch { Write-Info "Hidden process check skipped" }
+    $hits += $hiddenHits
+    if ($hiddenHits -eq 0) { Write-OK "No hidden processes detected" }
 
     Write-SectionResult $hits
     return $hits
 }
 
 # =====================================================
-# SECTION 5 -- REGISTRY EXECUTION
+# SECTION 5 -- REGISTRY EXECUTION ARTIFACTS
 # =====================================================
 function Run-Section5 {
     Write-Header "SECTION 5 -- REGISTRY EXECUTION ARTIFACTS" "Cyan"
     $hits = 0
 
-    # AppCompatFlags
     Write-Info "Scanning AppCompatFlags..."
     $acfKeys = @(
         "HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store",
@@ -2052,36 +1932,39 @@ function Run-Section5 {
     foreach ($key in $acfKeys) {
         if (-not (Test-Path $key)) { continue }
         $props = Get-ItemProperty $key -ErrorAction SilentlyContinue
+        if (-not $props) { continue }
         $props.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
             $name = $_.Name
-            if (Is-GlobalFP $name) { return }
-            $match = Test-CheatMatch $name.ToLower()
-            if ($match) {
-                Write-Hit "AppCompatFlags HIT: $name -- matches '$match'"
-                Add-Finding "RegistryExecution" "AppCompatFlags" $name $match $null "Registry Execution" 30
-                $hits++
+            if (-not (Is-GlobalFP $name)) {
+                $match = Test-CheatMatch $name.ToLower()
+                if ($match) {
+                    Write-Hit "AppCompatFlags HIT: $name -- matches '$match'"
+                    Add-Finding "RegistryExecution" "AppCompatFlags" $name $match $null "Registry Execution" 30
+                    $hits++
+                }
             }
         }
     }
 
-    # TypedPaths (Explorer address bar)
     Write-Info "Scanning Explorer TypedPaths..."
     $tpKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths"
     if (Test-Path $tpKey) {
         $props = Get-ItemProperty $tpKey -ErrorAction SilentlyContinue
-        $props.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
-            $val = $_.Value
-            if (Is-GlobalFP $val) { return }
-            $match = Test-CheatMatch $val.ToLower()
-            if ($match) {
-                Write-Hit "TypedPaths HIT: $val -- matches '$match'"
-                Add-Finding "RegistryExecution" "TypedPaths" $val $match $null "Registry Execution" 25
-                $hits++
+        if ($props) {
+            $props.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
+                $val = $_.Value
+                if ($val -and -not (Is-GlobalFP $val)) {
+                    $match = Test-CheatMatch $val.ToLower()
+                    if ($match) {
+                        Write-Hit "TypedPaths HIT: $val -- matches '$match'"
+                        Add-Finding "RegistryExecution" "TypedPaths" $val $match $null "Registry Execution" 25
+                        $hits++
+                    }
+                }
             }
         }
     }
 
-    # RecentDocs
     Write-Info "Scanning RecentDocs registry..."
     $rdKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs"
     if (Test-Path $rdKey) {
@@ -2091,12 +1974,14 @@ function Run-Section5 {
             $props.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
                 $raw = $_.Value
                 if ($raw -is [byte[]]) {
-                    $str = [System.Text.Encoding]::Unicode.GetString($raw) -replace "[^\x20-\x7E]",""
-                    $match = Test-CheatMatch $str.ToLower()
-                    if ($match -and -not (Is-GlobalFP $str)) {
-                        Write-Hit "RecentDocs HIT: $str -- matches '$match'"
-                        Add-Finding "RegistryExecution" "RecentDocs" $str $match $null "Registry Execution" 20
-                        $hits++
+                    $str = ([System.Text.Encoding]::Unicode.GetString($raw)) -replace "[^\x20-\x7E]",""
+                    if ($str -and -not (Is-GlobalFP $str)) {
+                        $match = Test-CheatMatch $str.ToLower()
+                        if ($match) {
+                            Write-Hit "RecentDocs HIT: $str -- matches '$match'"
+                            Add-Finding "RegistryExecution" "RecentDocs" $str $match $null "Registry Execution" 20
+                            $hits++
+                        }
                     }
                 }
             }
@@ -2115,62 +2000,54 @@ function Run-Section6 {
     Write-Header "SECTION 6 -- POWERSHELL HISTORY & ENTROPY" "Cyan"
     $hits = 0
 
-    # PowerShell history
     Write-Info "Scanning PowerShell history files..."
+    $psHits = 0
     $historyPaths = [System.Collections.Generic.List[string]]::new()
     foreach ($profile in $allUserProfiles) {
         $hp = "$profile\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
         if (Test-Path $hp) { $historyPaths.Add($hp) }
     }
-
     foreach ($hPath in $historyPaths) {
         try {
-            $lines = Get-Content $hPath -ErrorAction Stop |
-                Where-Object { $_.Trim() -ne "" }
+            $lines = Get-Content $hPath -ErrorAction Stop | Where-Object { $_.Trim() -ne "" }
             foreach ($line in $lines) {
                 $lower = $line.ToLower()
                 $isFP  = $false
                 foreach ($fp in $psFPPatterns) { if ($lower -like "*$fp*") { $isFP = $true; break } }
                 if ($isFP) { continue }
-
+                $matchedRemote = $false
                 foreach ($pattern in $remoteExecPatterns) {
                     if ($lower -like "*$($pattern.Pattern)*") {
                         Write-Warn "PS History [$($pattern.Label)]: $line"
                         Add-Finding "RegistryExecution" "PSHistory" $line $pattern.Label $null "PowerShell History" 30
-                        $hits++
+                        $psHits++
+                        $matchedRemote = $true
                         break
                     }
                 }
-
-                foreach ($sc in $suspContent) {
-                    if ($lower -like "*$($sc.ToLower())*") {
-                        $match = Test-CheatMatch $lower
-                        if ($match) {
-                            Write-Hit "PS History cheat match: $line -- matches '$match'"
-                            Add-Finding "RegistryExecution" "PSHistoryCheat" $line $match $null "PowerShell History" 40
-                            $hits++
-                        }
-                        break
-                    }
+                if ($matchedRemote) { continue }
+                $match = Test-CheatMatch $lower
+                if ($match) {
+                    Write-Hit "PS History cheat match: $line -- matches '$match'"
+                    Add-Finding "RegistryExecution" "PSHistoryCheat" $line $match $null "PowerShell History" 40
+                    $psHits++
                 }
             }
         } catch { continue }
     }
-    if ($hits -eq 0) { Write-OK "PowerShell history: No suspicious commands" }
+    $hits += $psHits
+    if ($psHits -eq 0) { Write-OK "PowerShell history: No suspicious commands" }
 
-    # Entropy scan
     Write-Info "Running entropy scan on suspicious locations..."
+    $entHits = 0
     $entropyScanPaths = @(
-        "$env:TEMP",
-        "$env:LOCALAPPDATA\Temp",
-        "$env:APPDATA",
-        "$env:USERPROFILE\Downloads",
-        "$env:USERPROFILE\Desktop"
+        "$env:TEMP","$env:LOCALAPPDATA\Temp","$env:APPDATA",
+        "$env:USERPROFILE\Downloads","$env:USERPROFILE\Desktop"
     )
     foreach ($sp in $entropyScanPaths) {
         if (-not (Test-Path $sp)) { continue }
         $exes = Get-ChildItem $sp -Filter "*.exe" -File -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTime -ge $script:ScanCutoff }
+            Where-Object { $script:ScanDaysBack -ge 9999 -or $_.LastWriteTime -ge $script:ScanCutoff }
         foreach ($exe in $exes) {
             if (Is-GlobalFP $exe.FullName) { continue }
             $entropy = Get-FileEntropy $exe.FullName
@@ -2178,14 +2055,15 @@ function Run-Section6 {
                 Write-Hit "High entropy executable ($entropy): $($exe.FullName)"
                 Add-Finding "FilesystemExecution" "HighEntropy" $exe.FullName "entropy:$entropy" $null "Entropy Scan" 30
                 $entropyResults.Add([PSCustomObject]@{ Path=$exe.FullName; Entropy=$entropy; Flag="HIGH" })
-                $hits++
+                $entHits++
             } elseif ($entropy -ge $entropyWarn) {
                 Write-Warn "Elevated entropy executable ($entropy): $($exe.FullName)"
                 $entropyResults.Add([PSCustomObject]@{ Path=$exe.FullName; Entropy=$entropy; Flag="WARN" })
             }
         }
     }
-    if ($hits -eq 0) { Write-OK "Entropy scan: No high-entropy executables found" }
+    $hits += $entHits
+    if ($entHits -eq 0) { Write-OK "Entropy scan: No high-entropy executables found" }
 
     Write-SectionResult $hits
     return $hits
@@ -2193,39 +2071,33 @@ function Run-Section6 {
 
 # =====================================================
 # SECTION 7 -- RECENT ACTIVITY
-# Recent files, Event 4688 process creation
 # =====================================================
 function Run-Section7 {
     Write-Header "SECTION 7 -- RECENT ACTIVITY" "Cyan"
     $hits = 0
 
-    # Recent files
     Write-Info "Scanning recent files..."
+    $recentHits = 0
     $recentPath = "$env:APPDATA\Microsoft\Windows\Recent"
     if (Test-Path $recentPath) {
         $recent = Get-ChildItem $recentPath -File -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTime -ge $script:ScanCutoff }
+            Where-Object { $script:ScanDaysBack -ge 9999 -or $_.LastWriteTime -ge $script:ScanCutoff }
         foreach ($item in $recent) {
-            $name  = $item.Name
-            $match = Test-CheatMatch $name.ToLower()
+            $match = Test-CheatMatch $item.Name.ToLower()
             if ($match -and -not (Is-GlobalFP $item.FullName)) {
-                Write-Hit "Recent file HIT: $name -- matches '$match'"
-                Add-Finding "RecentActivity" "RecentFile" $name $match $null "Filesystem Execution" 20
-                $hits++
+                Write-Hit "Recent file HIT: $($item.Name) -- matches '$match'"
+                Add-Finding "RecentActivity" "RecentFile" $item.Name $match $null "Filesystem Execution" 20
+                $recentHits++
             }
         }
-        if ($hits -eq 0) { Write-OK "Recent files: No suspicious entries" }
     }
+    $hits += $recentHits
+    if ($recentHits -eq 0) { Write-OK "Recent files: No suspicious entries" }
 
-    # Event 4688 -- Process creation
     Write-Info "Scanning Event 4688 (process creation)..."
+    $evtHits = 0
     try {
-        $events4688 = Get-WinEvent -FilterHashtable @{
-            LogName   = "Security"
-            Id        = 4688
-            StartTime = $script:ScanCutoff
-        } -MaxEvents 500 -ErrorAction Stop
-
+        $events4688 = Get-WinEvent -FilterHashtable @{ LogName="Security"; Id=4688; StartTime=$script:ScanCutoff } -MaxEvents 1000 -ErrorAction Stop
         foreach ($ev in $events4688) {
             try {
                 $procName = $ev.Properties[5].Value
@@ -2238,20 +2110,19 @@ function Run-Section7 {
                     Write-Hit "Event 4688 HIT: $procName at $timeStr -- matches '$match'"
                     Add-Finding "RecentActivity" "ProcessCreation4688" "$procName ($timeStr)" $match $null "Event Log Evidence" 35
                     Add-Timeline "4688: $procName matches '$match' at $timeStr"
-                    $hits++
+                    $evtHits++
                 }
             } catch { continue }
         }
-        if ($hits -eq 0) { Write-OK "Event 4688: No suspicious process creation events" }
     } catch { Write-Info "Event 4688 scan skipped (audit policy or permissions)" }
+    $hits += $evtHits
+    if ($evtHits -eq 0) { Write-OK "Event 4688: No suspicious process creation events" }
 
-    # Event 1102 -- Security log cleared
     Write-Info "Checking for Security log clear events (1102)..."
+    $clearHits = 0
     try {
-        $logClears = Get-WinEvent -FilterHashtable @{
-            LogName = "Security"; Id = 1102
-        } -MaxEvents 10 -ErrorAction Stop |
-            Where-Object { $_.TimeCreated -ge $script:ScanCutoff }
+        $logClears = Get-WinEvent -FilterHashtable @{ LogName="Security"; Id=1102 } -MaxEvents 20 -ErrorAction Stop |
+            Where-Object { $script:ScanDaysBack -ge 9999 -or $_.TimeCreated -ge $script:ScanCutoff }
         foreach ($ev in $logClears) {
             $clearedBy = try { $ev.Properties[1].Value } catch { "Unknown" }
             $msg = "Security log CLEARED at $($ev.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')) by $clearedBy"
@@ -2259,32 +2130,26 @@ function Run-Section7 {
             Add-Finding "RecentActivity" "LogClear" $msg "Event 1102" $null "Event Log Evidence" 50
             Add-Timeline "CRITICAL: $msg"
             $kernelFindings.Add([PSCustomObject]@{
-                Type      = "SecurityLogCleared"
-                Time      = $ev.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss")
-                ClearedBy = $clearedBy
-                Note      = "Security audit log wiped -- possible evasion"
+                Type = "SecurityLogCleared"; Time = $ev.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss")
+                File = ""; Note = "Security audit log wiped -- possible evasion"
             })
             DeductCheat "Event Log Evidence" 40
-            $hits++
-        }
-        if (-not $logClears -or @($logClears).Count -eq 0) {
-            Write-OK "No Security log clear events in time range"
+            $clearHits++
         }
     } catch { Write-Info "Event 1102 check skipped (insufficient permissions or log unavailable)" }
+    $hits += $clearHits
+    if ($clearHits -eq 0) { Write-OK "No Security log clear events in time range" }
 
     Write-SectionResult $hits
     return $hits
 }
 
 # =====================================================
-# ROBLOX FOLDER SCAN
-# File integrity + unsigned DLL check
+# ROBLOX FOLDER INTEGRITY
 # =====================================================
 function Run-RobloxFolderCheck {
     Write-Header "ROBLOX FOLDER INTEGRITY" "Cyan"
-    $hits   = 0
-    $total  = 0
-    $pct    = 0
+    $hits = 0
 
     $robloxInstalls = [System.Collections.Generic.List[string]]::new()
     foreach ($base in $officialRobloxPaths) {
@@ -2303,40 +2168,33 @@ function Run-RobloxFolderCheck {
     foreach ($install in $robloxInstalls) {
         Write-Info "Scanning: $install"
         $files = @(Get-ChildItem $install -File -Recurse -Force -ErrorAction SilentlyContinue)
-        $total = $files.Count
+        $total = [math]::Max($files.Count, 1)
         $done  = 0
         foreach ($file in $files) {
             $done++
             if ($done % 50 -eq 0) {
-                $pct = [math]::Round($done / [math]::Max($total,1) * 100)
-                Write-ProgressBar "Roblox folder" $pct
+                Write-ProgressBar "Roblox folder" ([math]::Round($done / $total * 100))
             }
             $fname = $file.Name.ToLower()
             $fpath = $file.FullName
 
-            # Known FP DLLs
             if ($robloxFolderFPFiles -contains $fname) { continue }
 
-            # Cheat term match
             $match = Test-CheatMatch $fname
             if ($match) {
                 Write-Host ""
                 Write-Hit "Roblox folder HIT: $fpath -- matches '$match'"
                 Add-Finding "RobloxFolder" "CheatFile" $fpath $match $null "Roblox Folder" 50
+                Add-Timeline "Cheat in Roblox folder: $fpath"
                 $robloxFolderResults.Add([PSCustomObject]@{ Path=$fpath; Issue="CheatMatch"; Match=$match; Signed=$false })
                 $hits++
                 continue
             }
 
-            # Unsigned DLL check
             if ($fname.EndsWith(".dll") -and -not (Is-SignedByRoblox $fpath)) {
-                $isFPDll = $false
-                foreach ($fp in $robloxFolderFPFiles) { if ($fname -like "*$fp*") { $isFPDll = $true; break } }
-                if (-not $isFPDll) {
-                    Write-Warn "Unsigned DLL in Roblox folder: $fpath"
-                    Add-Finding "RobloxFolder" "UnsignedDLL" $fpath "" $null "Roblox Folder" 20
-                    $robloxFolderResults.Add([PSCustomObject]@{ Path=$fpath; Issue="UnsignedDLL"; Match=""; Signed=$false })
-                }
+                Write-Warn "Unsigned DLL in Roblox folder: $fpath"
+                Add-Finding "RobloxFolder" "UnsignedDLL" $fpath "" $null "Roblox Folder" 20
+                $robloxFolderResults.Add([PSCustomObject]@{ Path=$fpath; Issue="UnsignedDLL"; Match=""; Signed=$false })
             }
         }
         Write-Host ""
@@ -2365,7 +2223,8 @@ function Run-MemoryScan {
 
     foreach ($proc in $robloxProcs) {
         Write-Info "[1/3] Scanning memory strings: $($proc.ProcessName) (PID $($proc.Id))..."
-        $memResult = Scan-RobloxProcessMemory $proc.Id $proc.ProcessName (try { $proc.MainModule.FileName } catch { "" })
+        $ppath = try { $proc.MainModule.FileName } catch { "" }
+        $memResult = Scan-RobloxProcessMemory $proc.Id $proc.ProcessName $ppath
 
         if ($memResult.Error) {
             Write-Warn "Memory scan error: $($memResult.Error)"
@@ -2379,70 +2238,73 @@ function Run-MemoryScan {
                 $hits++
             }
             foreach ($s in $memResult.SuspiciousHits) {
-                Write-SuspHit "Memory SUSP: '$($s.String)' @ $($s.Address) [$($s.Region)]"
+                Write-SuspHit "Memory SUSP: '$($s.String)' @ $($s.Address) [$($s.Region)] (Roblox may use this legitimately)"
                 $suspiciousMemFindings.Add($s)
-                Add-Finding "ProcessMemory" "MemStringSusp" $s.String $s.Address $null "Process Memory" 10
+                Add-Finding "ProcessMemory" "MemStringSusp" $s.String $s.Address $null "Process Memory" 5
             }
-            foreach ($ub in $memResult.UnbackedExec) {
-                Write-Warn "Unbacked exec region: $($ub.Address) [$($ub.Protection)] $($ub.SizeKB) KB"
+            if ($memResult.StringHits.Count -eq 0) { Write-OK "$($proc.ProcessName) PID $($proc.Id) -- string scan clean" }
+            foreach ($ub in ($memResult.UnbackedExec | Where-Object { $_.SizeKB -gt 256 })) {
+                Write-Warn "Large PRIVATE exec region: $($ub.Address) [$($ub.Protection)] $($ub.SizeKB) KB"
             }
         }
 
         Write-Info "[2/3] Thread start address scan: $($proc.ProcessName) (PID $($proc.Id))..."
         $threads = Get-SuspiciousThreads $proc.Id
         foreach ($t in $threads) {
-            Write-Hit "Suspicious thread: TID $($t.ThreadID) starts in PRIVATE exec @ $($t.StartAddr) [$($t.Protection)]"
-            $threadFindings.Add($t)
-            Add-Finding "ProcessMemory" "SuspThread" "TID:$($t.ThreadID)" $t.StartAddr $null "Process Memory" 45
-            Add-Timeline "Suspicious thread in $($proc.ProcessName): $($t.StartAddr)"
+            Write-Critical "Suspicious thread: TID $($t.ThreadID) starts in PRIVATE exec @ $($t.StartAddr) [$($t.Protection)]"
+            $threadFindings.Add([PSCustomObject]@{ PID=$proc.Id; Name=$proc.ProcessName; ThreadID=$t.ThreadID; StartAddr=$t.StartAddr; Protection=$t.Protection; RegionKB=$t.RegionKB })
+            Add-Finding "ProcessMemory" "SuspThread" "TID:$($t.ThreadID)" $t.StartAddr $null "Process Memory" 50
+            Add-Timeline "CRITICAL: Shellcode thread TID $($t.ThreadID) in $($proc.ProcessName)"
             $hits++
         }
-        if ($threads.Count -eq 0) { Write-OK "No shellcode threads detected" }
+        if ($threads.Count -eq 0) { Write-OK "$($proc.ProcessName) PID $($proc.Id) -- thread scan clean" }
 
         Write-Info "[3/3] Process hollowing check: $($proc.ProcessName) (PID $($proc.Id))..."
         $hollow = Test-ProcessHollowing $proc.Id
         if ($hollow) {
-            Write-Hit "Process HOLLOWING detected: $($proc.ProcessName) (PID $($proc.Id)) -- PEB ImageBase in PRIVATE memory"
-            $hollowFindings.Add([PSCustomObject]@{ PID=$proc.Id; Name=$proc.ProcessName; Note="PEB ImageBase in PRIVATE memory" })
-            Add-Finding "ProcessMemory" "ProcessHollowing" $proc.ProcessName "PID:$($proc.Id)" $null "Process Memory" 60
-            Add-Timeline "HOLLOWING: $($proc.ProcessName) PID $($proc.Id)"
+            Write-Critical "Process HOLLOWING detected: $($proc.ProcessName) (PID $($proc.Id)) -- PEB ImageBase in PRIVATE memory"
+            $hollowFindings.Add([PSCustomObject]@{ PID=$proc.Id; Name=$proc.ProcessName; Path=$ppath; Note="PEB ImageBase in PRIVATE memory" })
+            Add-Finding "ProcessMemory" "ProcessHollowing" $proc.ProcessName "PID:$($proc.Id)" $null "Process Memory" 80
+            Add-Timeline "CRITICAL: Process hollowing -- $($proc.ProcessName) PID $($proc.Id)"
             $hits++
-        } else { Write-OK "No process hollowing detected" }
+        } else { Write-OK "$($proc.ProcessName) PID $($proc.Id) -- not hollowed" }
+        Write-Host ""
     }
 
-    # Named pipes
     Write-Info "Enumerating named pipes..."
     $pipes = Get-SuspiciousNamedPipes
     foreach ($pipe in $pipes) {
-        Write-Hit "Suspicious pipe: \\.\pipe\$($pipe.PipeName) -- matches '$($pipe.Match)'"
+        Write-Critical "Suspicious pipe: \\.\pipe\$($pipe.PipeName) -- matches '$($pipe.Match)'"
         $pipeFindings.Add($pipe)
-        Add-Finding "ProcessMemory" "SuspPipe" $pipe.PipeName $pipe.Match $null "Named Pipes" 40
-        Add-Timeline "Suspicious pipe: $($pipe.PipeName)"
+        Add-Finding "ProcessMemory" "SuspPipe" $pipe.PipeName $pipe.Match $null "Named Pipes" 45
+        Add-Timeline "Cheat named pipe: $($pipe.PipeName)"
         $hits++
     }
-    if ($pipes.Count -eq 0) { Write-OK "No suspicious named pipes found" }
+    if ($pipes.Count -eq 0) { Write-OK "Named pipes: Clean" }
 
-    # Handle detection
     Write-Info "Scanning for non-Roblox processes with Roblox handle..."
     $handles = Get-ProcessesWithRobloxHandle
     foreach ($h in $handles) {
-        Write-Hit "Handle HIT: $($h.OwnerName) (PID $($h.OwnerPID)) holds handle to Roblox PID $($h.TargetPID) [VMRead=$($h.VMRead)]"
-        $handleFindings.Add($h)
-        Add-Finding "ProcessMemory" "RobloxHandle" $h.OwnerName "PID:$($h.OwnerPID)" $null "Process Memory" 50
-        Add-Timeline "Handle: $($h.OwnerName) -> Roblox"
+        $cheatMatch = Test-CheatMatch $h.OwnerName.ToLower()
+        $severity   = if ($cheatMatch) { 55 } else { 25 }
+        Write-Critical "Handle: $($h.OwnerName) (PID $($h.OwnerPID)) holds handle to Roblox PID $($h.TargetPID) [VMRead=$($h.VMRead)] CheatMatch=$cheatMatch"
+        $handleFindings.Add([PSCustomObject]@{ OwnerPID=$h.OwnerPID; OwnerName=$h.OwnerName; OwnerPath=$h.OwnerPath; TargetPID=$h.TargetPID; Access=$h.Access; VMRead=$h.VMRead; CheatMatch=$cheatMatch })
+        Add-Finding "ProcessMemory" "RobloxHandle" $h.OwnerName "PID:$($h.OwnerPID)" $null "Process Memory" $severity
+        if ($cheatMatch) { Add-Timeline "CRITICAL: Cheat process '$cheatMatch' has Roblox handle open" }
         $hits++
     }
-    if ($handles.Count -eq 0) { Write-OK "No suspicious handles to Roblox detected" }
+    if ($handles.Count -eq 0) { Write-OK "Handle scan: No unexpected processes with Roblox open" }
 
+    if ($hits -eq 0) { Write-OK "All memory checks: Clean" }
     Write-SectionResult $hits
     return $hits
 }
 
 # =====================================================
-# PAN SCAN -- Prefetch All Names (broad pass)
+# PAN SCAN -- Prefetch All Names (broad pass, all time)
 # =====================================================
 function Run-PANScan {
-    Write-Header "PAN SCAN -- PREFETCH ALL NAMES" "Cyan"
+    Write-Header "PAN SCAN -- PREFETCH ALL NAMES (ALL TIME)" "Cyan"
     $hits = 0
     $pfPath = "C:\Windows\Prefetch"
     if (-not (Test-Path $pfPath)) {
@@ -2470,115 +2332,132 @@ function Run-PANScan {
     Write-SectionResult $hits
     return $hits
 }
-
 # =====================================================
 # KERNEL DRIVER SCAN
-# Event 7045, loaded drivers, BYOVD, Memory Integrity
-# blocked loads, near-Roblox timing
 # =====================================================
 function Run-KernelDriverScan {
     Write-Header "KERNEL DRIVER SCAN" "Cyan"
     $hits = 0
 
-    # Event 7045 -- new service/driver installs
+    $robloxStartTime = $null
+    foreach ($rn in $robloxProcessNames) {
+        $rproc = Get-Process -Name $rn -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($rproc) { try { $robloxStartTime = $rproc.StartTime } catch {}; break }
+    }
+    if ($robloxStartTime) { Write-Info "Roblox started: $($robloxStartTime.ToString('yyyy-MM-dd HH:mm:ss')) -- flagging drivers within 5 min of this" }
+
     Write-Info "Scanning Event 7045 (new service installs)..."
     try {
-        $events = Get-WinEvent -FilterHashtable @{
-            LogName   = "System"
-            Id        = 7045
-            StartTime = $script:ScanCutoff
-        } -MaxEvents 200 -ErrorAction Stop
-
+        $events = Get-WinEvent -FilterHashtable @{ LogName="System"; Id=7045; StartTime=$script:ScanCutoff } -MaxEvents 500 -ErrorAction Stop
         foreach ($ev in $events) {
             $svcName = try { $ev.Properties[0].Value } catch { "" }
             $svcFile = try { $ev.Properties[1].Value } catch { "" }
             $svcType = try { $ev.Properties[3].Value } catch { "" }
             if (-not $svcName) { continue }
-            $isKernel = $svcType -like "*kernel*"
+            $isKernel = $svcType -like "*kernel*" -or $svcType -like "*driver*" -or $svcType -eq "1"
             $checkStr = "$svcName $svcFile".ToLower()
             if (Is-GlobalFP $checkStr) { continue }
 
-            foreach ($byovd in $byovdDrivers) {
-                if ($checkStr -like "*$byovd*") {
-                    Write-KernelHit "Event 7045 BYOVD: '$svcName' matches '$byovd' at $($ev.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'))"
-                    Add-Finding "KernelDrivers" "BYOVD-7045" $svcName $byovd $null "Kernel Drivers" 70
-                    $kernelFindings.Add([PSCustomObject]@{ Type="BYOVD-Install"; Name=$svcName; File=$svcFile; Time=$ev.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss"); Note="Matched BYOVD list: $byovd" })
-                    Add-Timeline "BYOVD driver install: $svcName"
-                    $hits++
-                }
-            }
+            $byovdMatch = $null
+            foreach ($bd in $byovdDrivers) { if ($checkStr -like "*$bd*") { $byovdMatch = $bd; break } }
+            $cheatMatch = Test-CheatMatch $checkStr
+            $inTemp     = $svcFile -and ($svcFile.ToLower() -like "*\temp\*" -or $svcFile.ToLower() -like "*\appdata\*" -or $svcFile.ToLower() -like "*\downloads\*")
+            $nearRoblox = $robloxStartTime -and [math]::Abs(($ev.TimeCreated - $robloxStartTime).TotalMinutes) -le 5
 
-            $match = Test-CheatMatch $checkStr
-            if ($match) {
-                Write-KernelHit "Event 7045 cheat service: '$svcName' matches '$match'"
-                Add-Finding "KernelDrivers" "CheatService-7045" $svcName $match $null "Kernel Drivers" 50
-                $kernelFindings.Add([PSCustomObject]@{ Type="CheatService"; Name=$svcName; File=$svcFile; Time=$ev.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss"); Note="Cheat match: $match" })
+            if ($byovdMatch) {
+                Write-KernelHit "Event 7045 BYOVD: '$svcName' matches '$byovdMatch' at $($ev.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'))"
+                Add-Finding "KernelDrivers" "BYOVD-7045" $svcName $byovdMatch $null "Kernel Drivers" 70
+                $kernelFindings.Add([PSCustomObject]@{ Type="BYOVD-Install"; Name=$svcName; File=$svcFile; Time=$ev.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss"); Note="Matched BYOVD list: $byovdMatch" })
+                Add-Timeline "BYOVD driver install: $svcName"
+                $hits++
+            } elseif ($cheatMatch) {
+                Write-KernelHit "Event 7045 cheat service: '$svcName' matches '$cheatMatch'"
+                Add-Finding "KernelDrivers" "CheatService-7045" $svcName $cheatMatch $null "Kernel Drivers" 50
+                $kernelFindings.Add([PSCustomObject]@{ Type="CheatService"; Name=$svcName; File=$svcFile; Time=$ev.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss"); Note="Cheat match: $cheatMatch" })
+                $hits++
+            } elseif ($isKernel -and $inTemp) {
+                Write-Critical "DRIVER loaded from user-writable path: $svcName | $svcFile"
+                Add-Finding "KernelDrivers" "KernelDriver-TempPath" $svcName $svcFile $null "Kernel Drivers" 70
+                $kernelFindings.Add([PSCustomObject]@{ Type="TempPathDriver"; Name=$svcName; File=$svcFile; Time=$ev.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss"); Note="LOADED FROM TEMP/USER PATH" })
                 $hits++
             } elseif ($isKernel -and -not (Is-KnownLegitDriver $svcName)) {
-                Write-Warn "Unknown kernel driver installed: $svcName ($svcFile)"
-                Add-Finding "KernelDrivers" "UnknownKernelDriver" $svcName $svcFile $null "Kernel Drivers" 20
-                $kernelFindings.Add([PSCustomObject]@{ Type="UnknownKernel"; Name=$svcName; File=$svcFile; Time=$ev.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss"); Note="Unknown kernel driver" })
+                if ($nearRoblox) {
+                    Write-KernelHit "Driver installed within 5 min of Roblox startup: $svcName"
+                    Add-Finding "KernelDrivers" "KernelDriver-NearRoblox" $svcName $svcFile $null "Kernel Drivers" 35
+                    $kernelFindings.Add([PSCustomObject]@{ Type="NearRoblox"; Name=$svcName; File=$svcFile; Time=$ev.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss"); Note="LOADED WITHIN 5 MIN OF ROBLOX STARTUP" })
+                    $hits++
+                } else {
+                    Write-Warn "Unknown kernel driver installed: $svcName ($svcFile)"
+                    Add-Finding "KernelDrivers" "UnknownKernelDriver" $svcName $svcFile $null "Kernel Drivers" 15
+                    $kernelFindings.Add([PSCustomObject]@{ Type="UnknownKernel"; Name=$svcName; File=$svcFile; Time=$ev.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss"); Note="Unfamiliar driver -- verify manually" })
+                }
             }
         }
         if ($hits -eq 0) { Write-OK "Event 7045: No suspicious driver installs" }
     } catch { Write-Info "Event 7045 scan skipped" }
 
-    # Loaded drivers enumeration
     Write-Info "Enumerating currently loaded drivers..."
+    $before = $hits
     try {
-        $drivers = Get-WmiObject Win32_SystemDriver -ErrorAction Stop
+        $drivers = Get-WmiObject Win32_SystemDriver -ErrorAction Stop | Where-Object { $_.State -eq "Running" }
         foreach ($drv in $drivers) {
             $drvName = ($drv.Name -replace "\.sys$","").ToLower()
             $drvPath = $drv.PathName
             if (Is-KnownLegitDriver $drvName) { continue }
             if (Is-GlobalFP $drvPath) { continue }
-            if ($byovdDrivers -contains $drvName) {
-                Write-KernelHit "LOADED BYOVD driver: $drvName ($drvPath)"
+            $byovdMatch = $null
+            foreach ($bd in $byovdDrivers) {
+                $isMatch = if ($bd.Length -le 5) { $drvName -eq $bd } else { $drvName -like "*$bd*" }
+                if ($isMatch) { $byovdMatch = $bd; break }
+            }
+            $cleanPath = $drvPath -replace '\\\\?\\.\\','' -replace '"',''
+            $sig = $null
+            try { $sig = Get-AuthenticodeSignature $cleanPath -ErrorAction Stop } catch {}
+            if ($sig -and $sig.SignerCertificate) {
+                $thumb = $sig.SignerCertificate.Thumbprint
+                if ($knownBadThumbs -contains $thumb) {
+                    Write-Critical "KNOWN-ABUSED cert thumbprint: $drvName | $thumb"
+                    Add-Finding "KernelDrivers" "AbusedCertDriver" $drvName $thumb $null "Kernel Drivers" 75
+                    $kernelFindings.Add([PSCustomObject]@{ Type="AbusedCert"; Name=$drvName; File=$cleanPath; Time="NOW"; Note="KNOWN-ABUSED CERT: $thumb" })
+                    $hits++
+                }
+                if ($sig.Status -eq "UnknownError" -or $sig.Status -eq "HashMismatch") {
+                    Write-Critical "REVOKED/INVALID signature on driver: $drvName"
+                    Add-Finding "KernelDrivers" "RevokedCertDriver" $drvName $sig.Status $null "Kernel Drivers" 70
+                    $kernelFindings.Add([PSCustomObject]@{ Type="RevokedCert"; Name=$drvName; File=$cleanPath; Time="NOW"; Note="REVOKED/INVALID SIG: $($sig.Status)" })
+                    $hits++
+                }
+            }
+            if ($byovdMatch) {
+                Write-Critical "LOADED BYOVD driver: $drvName ($drvPath)"
                 Add-Finding "KernelDrivers" "BYOVD-Loaded" $drvName $drvPath $null "Kernel Drivers" 80
                 $kernelFindings.Add([PSCustomObject]@{ Type="BYOVD-Loaded"; Name=$drvName; File=$drvPath; Time="NOW"; Note="Currently loaded BYOVD driver" })
                 Add-Timeline "CRITICAL: BYOVD driver loaded: $drvName"
                 $hits++
+                continue
             }
-        }
-    } catch { Write-Info "Driver enumeration skipped" }
-
-    # WMI BYOVD check
-    Write-Info "Checking WMI for BYOVD driver remnants..."
-    try {
-        $wmiDrivers = Get-WmiObject Win32_PnPSignedDriver -ErrorAction Stop |
-            Where-Object { $_.DriverName }
-        foreach ($d in $wmiDrivers) {
-            $dName = ($d.DriverName -replace "\.sys$","").ToLower()
-            if ($byovdDrivers -contains $dName) {
-                Write-KernelHit "WMI BYOVD driver: $dName"
-                Add-Finding "KernelDrivers" "BYOVD-WMI" $dName "" $null "Kernel Drivers" 60
+            $cheatMatch = Test-CheatMatch $drvName
+            if ($cheatMatch) {
+                Write-Critical "LOADED DRIVER matches cheat: $drvName"
+                Add-Finding "KernelDrivers" "LoadedDriver-CheatMatch" $drvName $drvPath $null "Kernel Drivers" 60
+                $kernelFindings.Add([PSCustomObject]@{ Type="CheatDriver"; Name=$drvName; File=$drvPath; Time="NOW"; Note="CURRENTLY LOADED -- CHEAT MATCH: $cheatMatch" })
+                Add-Timeline "Cheat driver loaded: $drvName"
+                $hits++
+                continue
+            }
+            if ($drvPath -and ($drvPath.ToLower() -like "*\temp\*" -or $drvPath.ToLower() -like "*\appdata\*")) {
+                Write-Critical "DRIVER running from user-writable path: $drvName | $drvPath"
+                Add-Finding "KernelDrivers" "LoadedDriver-TempPath" $drvName $drvPath $null "Kernel Drivers" 65
+                $kernelFindings.Add([PSCustomObject]@{ Type="TempPathLoaded"; Name=$drvName; File=$drvPath; Time="NOW"; Note="RUNNING FROM USER-WRITABLE PATH" })
                 $hits++
             }
         }
-    } catch {}
+        if ($hits -eq $before) { Write-OK "Loaded driver check: Clean" }
+    } catch { Write-Info "Driver enumeration skipped" }
 
-    # Memory Integrity blocked loads (Event 3077)
-    Write-Info "Checking Memory Integrity blocked driver loads (Event 3077)..."
-    try {
-        $blockedLoads = Get-WinEvent -FilterHashtable @{
-            LogName   = "Microsoft-Windows-CodeIntegrity/Operational"
-            Id        = 3077
-            StartTime = $script:ScanCutoff
-        } -MaxEvents 50 -ErrorAction Stop
-        foreach ($ev in $blockedLoads) {
-            $drvFile = try { $ev.Properties[0].Value } catch { "Unknown" }
-            Write-Warn "Memory Integrity BLOCKED: $drvFile at $($ev.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'))"
-            Add-Finding "KernelDrivers" "MIBlocked" $drvFile "" $null "Kernel Drivers" 30
-            $kernelFindings.Add([PSCustomObject]@{ Type="MI-Blocked"; Name=$drvFile; File=$drvFile; Time=$ev.TimeCreated.ToString("yyyy-MM-dd HH:mm:ss"); Note="Blocked by Memory Integrity" })
-            $hits++
-        }
-    } catch {}
-
-    if ($hits -eq 0) { Write-OK "Kernel drivers: No BYOVD or suspicious installs detected" }
     Write-SectionResult $hits
     return $hits
-}
-
+} 
 # =====================================================
 # LAUNCH CHAIN SCAN
 # =====================================================
@@ -2595,59 +2474,64 @@ function Run-LaunchChainScan {
         return 0
     }
 
-    foreach ($proc in $robloxProcs) {
-        $chain = Get-ProcessAncestry $proc.Id
-        Write-Info "Launch chain for $($proc.ProcessName) (PID $($proc.Id)):"
-        foreach ($link in $chain) {
-            Write-Info "  -> $($link.Name) (PID $($link.PID)) : $($link.Path)"
-        }
+    $neutralParents = @("explorer","userinit","svchost","cmd","powershell","pwsh","wininit","winlogon","services","taskmgr","system")
 
-        # Check executable path is official
+    foreach ($proc in $robloxProcs) {
+        Write-Host "  Checking: $($proc.ProcessName) PID $($proc.Id)" -ForegroundColor Cyan
+        $chain = Get-ProcessAncestry $proc.Id
+        foreach ($link in $chain) { Write-Info "    PID $($link.PID) -- $($link.Name) | $($link.Path)" }
+
         $procPath = try { $proc.MainModule.FileName } catch { "" }
         if ($procPath) {
             $isOfficial = $false
-            foreach ($op in $officialRobloxPaths) {
-                if ($procPath.ToLower().StartsWith($op.ToLower())) { $isOfficial = $true; break }
-            }
+            foreach ($op in $officialRobloxPaths) { if ($procPath.ToLower().StartsWith($op.ToLower())) { $isOfficial = $true; break } }
             if (-not $isOfficial) {
                 Write-LaunchHit "Roblox running from non-official path: $procPath"
                 Add-Finding "LaunchChain" "NonOfficialPath" $procPath "" $null "Launch Chain" 50
-                $launchChainFindings.Add([PSCustomObject]@{ Issue="NonOfficialPath"; Detail=$procPath; PID=$proc.Id })
+                $launchChainFindings.Add([PSCustomObject]@{ RobloxProcess="$($proc.ProcessName) PID $($proc.Id)"; ParentName=""; ParentPath=$procPath; Note="NON-OFFICIAL INSTALL PATH" })
                 Add-Timeline "Roblox non-official path: $procPath"
                 $hits++
             } else { Write-OK "Roblox path is official: $procPath" }
         }
 
-        # Check parent process
-        if ($chain.Count -ge 2) {
-            $parent     = $chain[1]
-            $parentName = $parent.Name.ToLower()
-            $parentPath = $parent.Path
+        $chainFlagged = $false
+        for ($i = 1; $i -lt $chain.Count; $i++) {
+            $parent     = $chain[$i]
+            $parentName = if ($parent.Name) { $parent.Name.ToLower() } else { "" }
+            $parentPath = if ($parent.Path) { $parent.Path.ToLower() } else { "" }
 
             $isKnownLauncher = $false
-            foreach ($lnch in $knownThirdPartyLaunchers) {
-                if ($parentName -like "*$($lnch.ToLower())*") { $isKnownLauncher = $true; break }
+            foreach ($tpl in $knownThirdPartyLaunchers) {
+                if ($parentName -like "*$($tpl.ToLower())*" -or $parentPath -like "*$($tpl.ToLower())*") {
+                    Write-LaunchHit "3rd-party launcher in chain: $($parent.Name) | $($parent.Path)"
+                    Add-Finding "LaunchChain" "ThirdPartyLauncher" $parent.Name $parent.Path $null "Launch Chain" 20
+                    $launchChainFindings.Add([PSCustomObject]@{ RobloxProcess="$($chain[0].Name) PID $($chain[0].PID)"; ParentName=$parent.Name; ParentPath=$parent.Path; Note="3rd party launcher: $tpl" })
+                    Add-Timeline "3rd party launcher: $($parent.Name)"
+                    $isKnownLauncher = $true; $chainFlagged = $true; $hits++
+                    break
+                }
             }
+            if ($isKnownLauncher) { break }
 
-            $neutralParents = @("explorer","cmd","powershell","pwsh","taskmgr","services","svchost")
-            $isNeutral      = $neutralParents -contains $parentName
+            $isNeutral = $neutralParents -contains $parentName -or ($neutralParents | Where-Object { $parentName -like "$_*" }).Count -gt 0
 
-            if (-not $isNeutral -and -not $isKnownLauncher) {
+            if (-not $isNeutral -and $parentName -ne "") {
                 $match = Test-CheatMatch $parentName
                 if ($match) {
-                    Write-LaunchHit "Suspicious parent process: $($parent.Name) (PID $($parent.PID)) -- matches '$match'"
-                    Add-Finding "LaunchChain" "SuspParent" $parent.Name $match $null "Launch Chain" 60
-                    $launchChainFindings.Add([PSCustomObject]@{ Issue="SuspParent"; Detail="$($parent.Name) PID $($parent.PID)"; PID=$proc.Id })
-                    $hits++
+                    Write-Critical "CHEAT PROCESS in Roblox launch chain: $($parent.Name) matches '$match'"
+                    Add-Finding "LaunchChain" "CheatInLaunchChain" $parent.Name $match $null "Launch Chain" 60
+                    $launchChainFindings.Add([PSCustomObject]@{ RobloxProcess="$($chain[0].Name) PID $($chain[0].PID)"; ParentName=$parent.Name; ParentPath=$parent.Path; Note="CHEAT MATCH: $match" })
+                    Add-Timeline "CRITICAL: Cheat launcher: $($parent.Name)"
+                    $chainFlagged = $true; $hits++
                 } else {
-                    Write-Warn "Unexpected parent: $($parent.Name) ($parentPath)"
-                    Add-Finding "LaunchChain" "UnexpectedParent" $parent.Name $parentPath $null "Launch Chain" 20
-                    $launchChainFindings.Add([PSCustomObject]@{ Issue="UnexpectedParent"; Detail="$($parent.Name) PID $($parent.PID)"; PID=$proc.Id })
+                    Write-Warn "Unexpected parent: $($parent.Name) ($($parent.Path))"
+                    Add-Finding "LaunchChain" "UnexpectedParent" $parent.Name $parent.Path $null "Launch Chain" 10
+                    $launchChainFindings.Add([PSCustomObject]@{ RobloxProcess="$($chain[0].Name) PID $($chain[0].PID)"; ParentName=$parent.Name; ParentPath=$parent.Path; Note="Unrecognized parent -- verify manually" })
                 }
-            } else {
-                Write-OK "Parent process acceptable: $($parent.Name)"
             }
         }
+        if (-not $chainFlagged) { Write-OK "$($proc.ProcessName) PID $($proc.Id) -- launch chain clean" }
+        Write-Host ""
     }
 
     if ($hits -eq 0) { Write-OK "Launch chain: No suspicious ancestry detected" }
@@ -2669,56 +2553,74 @@ function Scan-RobloxLogs {
     }
 
     $logFiles = @(Get-ChildItem $logRoot -File -Filter "*.log" -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTime -ge $script:ScanCutoff } |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 10)
+        Where-Object { $script:ScanDaysBack -ge 9999 -or $_.LastWriteTime -ge $script:ScanCutoff } |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 50)
 
     Write-Info "Log files to scan: $($logFiles.Count)"
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
     foreach ($log in $logFiles) {
         try {
-            $content = Get-Content $log.FullName -ErrorAction Stop
-            foreach ($line in $content) {
-                $lower = $line.ToLower()
+            $lines   = [System.IO.File]::ReadAllLines($log.FullName)
+            $lineNum = 0
+            foreach ($line in $lines) {
+                $lineNum++
+                $ll = $line.ToLower()
+                $matchedMarker = $null
                 foreach ($marker in $robloxLogCheatMarkers) {
-                    if ($lower -like "*$($marker.ToLower())*") {
-                        Write-Hit "Log HIT in $($log.Name): $line"
-                        Add-Finding "CheatArtifacts" "RobloxLog" $log.Name $line $null "Roblox Logs" 30
-                        Add-Timeline "Roblox log hit: $line"
+                    if ($ll -like "*$($marker.ToLower())*") { $matchedMarker = $marker; break }
+                }
+                if ($matchedMarker) {
+                    $key = "$($log.Name)|$matchedMarker"
+                    if ($seen.Add($key)) {
+                        $snippet = $line.Trim()
+                        if ($snippet.Length -gt 120) { $snippet = $snippet.Substring(0,120) + "..." }
+                        Write-Hit "Log [$($log.Name) L$lineNum] marker '$matchedMarker': $snippet"
+                        Add-Finding "CheatArtifacts" "RobloxLog-Marker" "$($log.Name):L$lineNum" "$matchedMarker | $snippet" $null "Roblox Logs" 20
+                        Add-Timeline "Roblox log marker '$matchedMarker' in $($log.Name)"
                         $hits++
-                        break
+                    }
+                    continue
+                }
+                $m = Test-CheatMatch $ll
+                if ($m) {
+                    $key = "$($log.Name)|term|$m"
+                    if ($seen.Add($key)) {
+                        $snippet = $line.Trim()
+                        if ($snippet.Length -gt 120) { $snippet = $snippet.Substring(0,120) + "..." }
+                        Write-Hit "Log [$($log.Name) L$lineNum] cheat term '$m': $snippet"
+                        Add-Finding "CheatArtifacts" "RobloxLog-CheatTerm" "$($log.Name):L$lineNum" "$m | $snippet" $null "Roblox Logs" 25
+                        $hits++
                     }
                 }
             }
         } catch { continue }
     }
-    if ($hits -eq 0) { Write-OK "Roblox logs: No cheat markers found" }
+    if ($hits -eq 0) { Write-OK "Roblox logs: Clean" }
     Write-SectionResult $hits
     return $hits
 }
 
 # =====================================================
-# AMCACHE SCAN (VSS)
+# AMCACHE SCAN (via VSS)
 # =====================================================
 function Run-AmCacheScan {
     Write-Header "AMCACHE SCAN (via VSS)" "Cyan"
     $hits = 0
 
     $shadow = Get-WmiObject Win32_ShadowCopy -ErrorAction SilentlyContinue |
-        Sort-Object InstallDate -Descending |
-        Select-Object -First 1
+        Sort-Object InstallDate -Descending | Select-Object -First 1
 
     if (-not $shadow) {
         Write-Info "No VSS shadow copies found -- AmCache scan skipped"
-        Write-Info "AmCache is locked by the OS while Windows is running"
+        Write-Info "AmCache.hve is locked by the OS while Windows is running; this requires a shadow copy"
         Write-SectionResult 0
         return 0
     }
 
-    $shadowDevice = $shadow.DeviceObject
-    $hiveShadow   = "$shadowDevice\Windows\AppCompat\Programs\Amcache.hve"
-    $mountKey     = "HKLM\TempAmCache_CheatScan"
-    $mountPath    = "HKLM:\TempAmCache_CheatScan"
-    $mounted      = $false
+    $hiveShadow = "$($shadow.DeviceObject)\Windows\AppCompat\Programs\Amcache.hve"
+    $mountKey   = "HKLM\TempAmCache_CheatScan"
+    $mountPath  = "HKLM:\TempAmCache_CheatScan"
+    $mounted    = $false
 
     try {
         Write-Info "Shadow copy found: $($shadow.InstallDate)"
@@ -2737,18 +2639,17 @@ function Run-AmCacheScan {
             Write-Info "AmCache entries: $($entries.Count)"
             foreach ($entry in $entries) {
                 try {
-                    $props   = Get-ItemProperty $entry.PSPath -ErrorAction SilentlyContinue
-                    $name    = $props.Name
-                    $path    = $props.LowerCaseLongPath
+                    $props = Get-ItemProperty $entry.PSPath -ErrorAction SilentlyContinue
+                    $name  = $props.Name
+                    $path  = $props.LowerCaseLongPath
                     if (-not $name -and -not $path) { continue }
                     $checkStr = "$name $path".ToLower()
                     if (Is-GlobalFP $checkStr) { continue }
                     $match = Test-CheatMatch $checkStr
                     if ($match) {
-                        $detail = "AmCache HIT: '$name' at '$path' (matched '$match')"
-                        Write-Hit $detail
-                        Add-Finding "CheatArtifacts" "AmCache-Hit" $detail $path $null "Cheat Files Found" 35
-                        Add-Timeline "AmCache: $detail"
+                        Write-Hit "AmCache HIT: '$name' at '$path' (matched '$match')"
+                        Add-Finding "CheatArtifacts" "AmCache-Hit" $name $path $null "Cheat Files Found" 35
+                        Add-Timeline "AmCache hit: $name"
                         $hits++
                     }
                 } catch { continue }
@@ -2757,16 +2658,13 @@ function Run-AmCacheScan {
 
         $drvPath = "$mountPath\Root\InventoryDriverBinary"
         if (Test-Path $drvPath) {
-            $drvEntries = Get-ChildItem $drvPath -ErrorAction SilentlyContinue
-            foreach ($entry in $drvEntries) {
+            foreach ($entry in (Get-ChildItem $drvPath -ErrorAction SilentlyContinue)) {
                 try {
                     $props   = Get-ItemProperty $entry.PSPath -ErrorAction SilentlyContinue
                     $drvName = ($props.DriverName -replace "\.sys$","").ToLower()
-                    if (-not $drvName) { continue }
-                    if ($byovdDrivers -contains $drvName) {
-                        $detail = "AmCache BYOVD driver: '$drvName'"
-                        Write-KernelHit $detail
-                        Add-Finding "KernelDrivers" "AmCache-BYOVD" $detail $drvName $null "Kernel Drivers" 50
+                    if ($drvName -and $byovdDrivers -contains $drvName) {
+                        Write-KernelHit "AmCache BYOVD driver remnant: '$drvName'"
+                        Add-Finding "KernelDrivers" "AmCache-BYOVD" $drvName "" $null "Kernel Drivers" 50
                         $hits++
                     }
                 } catch { continue }
@@ -2774,7 +2672,6 @@ function Run-AmCacheScan {
         }
 
         if ($hits -eq 0) { Write-OK "AmCache: No cheat artifacts found" }
-
     } catch {
         Write-Warn "AmCache scan error: $_"
     } finally {
@@ -2782,9 +2679,7 @@ function Run-AmCacheScan {
             [GC]::Collect()
             Start-Sleep -Milliseconds 500
             reg unload $mountKey 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                Write-Warn "AmCache hive did not unmount cleanly -- reboot may clear it"
-            }
+            if ($LASTEXITCODE -ne 0) { Write-Warn "AmCache hive did not unmount cleanly -- a reboot will clear it" }
         }
     }
 
@@ -2793,7 +2688,7 @@ function Run-AmCacheScan {
 }
 
 # =====================================================
-# SCORES & FINDINGS SUMMARY
+# FINDINGS SUMMARY
 # =====================================================
 function Show-FindingsSummary {
     Write-Header "FINDINGS SUMMARY" "Magenta"
@@ -2801,27 +2696,30 @@ function Show-FindingsSummary {
     foreach ($cat in $findings.Keys) {
         $count = $findings[$cat].Count
         if ($count -gt 0 -and $cat -ne "FalsePositives") {
-            Write-Host "  $cat : $count finding(s)" -ForegroundColor $(if ($count -gt 0) { "Magenta" } else { "Green" })
+            Write-Host "  $cat : $count finding(s)" -ForegroundColor Magenta
             $totalHits += $count
         }
     }
     Write-Host ""
     Write-Host "  Total findings : $totalHits" -ForegroundColor $(if ($totalHits -gt 0) { "Magenta" } else { "Green" })
-    Write-Host "  False positives: $($findings['FalsePositives'].Count)" -ForegroundColor DarkGray
+    Write-Host "  False positives excluded: $($findings['FalsePositives'].Count)" -ForegroundColor DarkGray
     Write-Host ""
+    Read-Host "  Press ENTER to continue to scores"
 }
 
+# =====================================================
+# SCORES
+# =====================================================
 function Show-Scores {
     Write-Header "SCORES" "Cyan"
-
-    Write-Host "  [Configuration]" -ForegroundColor Yellow
+    Write-Host "  -- SYSTEM CONFIGURATION --" -ForegroundColor DarkCyan
     foreach ($k in $configScores.Keys) {
         $v   = $configScores[$k]
         $col = if ($v -ge 80) { "Green" } elseif ($v -ge 50) { "Yellow" } else { "Red" }
         Write-Host "    $k : $v / 100" -ForegroundColor $col
     }
     Write-Host ""
-    Write-Host "  [Cheat Detection]" -ForegroundColor Yellow
+    Write-Host "  -- CHEAT EVIDENCE --" -ForegroundColor DarkCyan
     foreach ($k in $cheatScores.Keys) {
         $v   = $cheatScores[$k]
         $col = if ($v -ge 80) { "Green" } elseif ($v -ge 50) { "Yellow" } else { "Red" }
@@ -2831,24 +2729,36 @@ function Show-Scores {
     $configAvg = [math]::Round(($configScores.Values | Measure-Object -Average).Average, 1)
     $cheatAvg  = [math]::Round(($cheatScores.Values  | Measure-Object -Average).Average, 1)
     Write-Host ""
-    Write-Host "  Config score : $configAvg / 100" -ForegroundColor $(if ($configAvg -ge 80) { "Green" } elseif ($configAvg -ge 50) { "Yellow" } else { "Red" })
-    Write-Host "  Cheat score  : $cheatAvg / 100"  -ForegroundColor $(if ($cheatAvg  -ge 80) { "Green" } elseif ($cheatAvg  -ge 50) { "Yellow" } else { "Red" })
+    Write-Host "  +-----------------------------------------+" -ForegroundColor Cyan
+    Write-Host "  | CONFIG SCORE : $configAvg / 100" -ForegroundColor $(if ($configAvg -ge 80) { "Green" } elseif ($configAvg -ge 50) { "Yellow" } else { "Red" })
+    Write-Host "  | CHEAT SCORE  : $cheatAvg / 100"  -ForegroundColor $(if ($cheatAvg  -ge 80) { "Green" } elseif ($cheatAvg  -ge 50) { "Yellow" } else { "Red" })
+    if     ($cheatAvg -ge 90) { Write-Host "  | VERDICT: No cheat evidence found." -ForegroundColor Green }
+    elseif ($cheatAvg -ge 70) { Write-Host "  | VERDICT: Minor suspicious activity -- review findings." -ForegroundColor Yellow }
+    elseif ($cheatAvg -ge 40) { Write-Host "  | VERDICT: Suspicious -- likely cheat activity detected." -ForegroundColor Red }
+    else                      { Write-Host "  | VERDICT: HIGH CONFIDENCE -- significant cheat evidence." -ForegroundColor Red }
+    Write-Host "  +-----------------------------------------+" -ForegroundColor Cyan
     Write-Host ""
+    Read-Host "  Press ENTER to continue"
+    return @{ Config = $configAvg; Cheat = $cheatAvg }
 }
 
 # =====================================================
 # HTML REPORT
 # =====================================================
-function Generate-Report {
-    $configAvg = [math]::Round(($configScores.Values | Measure-Object -Average).Average, 1)
-    $cheatAvg  = [math]::Round(($cheatScores.Values  | Measure-Object -Average).Average, 1)
-    $totalHits = ($findings.Keys | Where-Object { $_ -ne "FalsePositives" } | ForEach-Object { $findings[$_].Count } | Measure-Object -Sum).Sum
+function Generate-Report($scores) {
+    Write-Header "GENERATING HTML REPORT" "Cyan"
+    $scanDuration = [math]::Round(((Get-Date) - $startTime).TotalSeconds)
+
+    function Safe-Html($s) {
+        if ($null -eq $s) { return "" }
+        return $s.ToString().Replace("&","&amp;").Replace("<","&lt;").Replace(">","&gt;").Replace('"',"&quot;")
+    }
 
     $rowsHtml = ""
     foreach ($cat in $findings.Keys) {
         if ($cat -eq "FalsePositives") { continue }
         foreach ($f in $findings[$cat]) {
-            $rowsHtml += "<tr><td>$cat</td><td>$($f.Type)</td><td>$($f.Detail)</td><td>$($f.Value)</td><td>$($f.Timestamp)</td></tr>`n"
+            $rowsHtml += "<tr><td>$(Safe-Html $cat)</td><td>$(Safe-Html $f.Type)</td><td>$(Safe-Html $f.Detail)</td><td>$(Safe-Html $f.Value)</td><td>$(Safe-Html $f.Timestamp)</td></tr>`n"
         }
     }
 
@@ -2856,107 +2766,584 @@ function Generate-Report {
     foreach ($k in $configScores.Keys) {
         $v = $configScores[$k]
         $color = if ($v -ge 80) { "#00cc66" } elseif ($v -ge 50) { "#ffaa00" } else { "#ff4444" }
-        $configRows += "<tr><td>$k</td><td style='color:$color'>$v / 100</td></tr>`n"
+        $configRows += "<tr><td>$(Safe-Html $k)</td><td style='color:$color'>$v / 100</td></tr>`n"
     }
     $cheatRows = ""
     foreach ($k in $cheatScores.Keys) {
         $v = $cheatScores[$k]
         $color = if ($v -ge 80) { "#00cc66" } elseif ($v -ge 50) { "#ffaa00" } else { "#ff4444" }
-        $cheatRows += "<tr><td>$k</td><td style='color:$color'>$v / 100</td></tr>`n"
+        $cheatRows += "<tr><td>$(Safe-Html $k)</td><td style='color:$color'>$v / 100</td></tr>`n"
     }
 
     $memRowsHtml = ""
-    foreach ($m in $memoryFindings) {
-        $memRowsHtml += "<tr><td>$($m.String)</td><td>$($m.Address)</td><td>$($m.Region)</td></tr>`n"
-    }
+    foreach ($m in $memoryFindings) { $memRowsHtml += "<tr><td>$(Safe-Html $m.String)</td><td>$(Safe-Html $m.Address)</td><td>$(Safe-Html $m.Region)</td></tr>`n" }
     $suspMemRowsHtml = ""
-    foreach ($m in $suspiciousMemFindings) {
-        $suspMemRowsHtml += "<tr><td>$($m.String)</td><td>$($m.Address)</td><td>$($m.Region)</td></tr>`n"
-    }
+    foreach ($m in $suspiciousMemFindings) { $suspMemRowsHtml += "<tr><td>$(Safe-Html $m.String)</td><td>$(Safe-Html $m.Address)</td><td>$(Safe-Html $m.Region)</td></tr>`n" }
     $deltaRowsHtml = ""
     foreach ($d in $deltaFindings) {
         $color = switch ($d.Change) { "ADDED-HIT" { "#ff44aa" } "DELETED" { "#ffaa00" } default { "#4499ff" } }
-        $deltaRowsHtml += "<tr style='color:$color'><td>$($d.Category)</td><td>$($d.Change)</td><td>$($d.Entry)</td><td>$($d.Note)</td></tr>`n"
+        $deltaRowsHtml += "<tr style='color:$color'><td>$(Safe-Html $d.Category)</td><td>$(Safe-Html $d.Change)</td><td>$(Safe-Html $d.Entry)</td><td>$(Safe-Html $d.Note)</td></tr>`n"
     }
+    $kernelRowsHtml = ""
+    foreach ($k in $kernelFindings) { $kernelRowsHtml += "<tr><td>$(Safe-Html $k.Name)</td><td>$(Safe-Html $k.File)</td><td>$(Safe-Html $k.Time)</td><td>$(Safe-Html $k.Note)</td></tr>`n" }
+    $launchRowsHtml = ""
+    foreach ($l in $launchChainFindings) { $launchRowsHtml += "<tr><td>$(Safe-Html $l.RobloxProcess)</td><td>$(Safe-Html $l.ParentName)</td><td>$(Safe-Html $l.ParentPath)</td><td>$(Safe-Html $l.Note)</td></tr>`n" }
+    $threadRowsHtml = ""
+    foreach ($t in $threadFindings) { $threadRowsHtml += "<tr><td>$(Safe-Html $t.PID)</td><td>$(Safe-Html $t.Name)</td><td>$(Safe-Html $t.ThreadID)</td><td>$(Safe-Html $t.StartAddr)</td><td>$(Safe-Html $t.Protection)</td></tr>`n" }
+    $hollowRowsHtml = ""
+    foreach ($h in $hollowFindings) { $hollowRowsHtml += "<tr><td>$(Safe-Html $h.PID)</td><td>$(Safe-Html $h.Name)</td><td>$(Safe-Html $h.Path)</td><td>$(Safe-Html $h.Note)</td></tr>`n" }
+    $pipeRowsHtml = ""
+    foreach ($p in $pipeFindings) { $pipeRowsHtml += "<tr><td>$(Safe-Html $p.PipeName)</td><td>$(Safe-Html $p.Match)</td></tr>`n" }
+    $handleRowsHtml = ""
+    foreach ($h in $handleFindings) { $handleRowsHtml += "<tr><td>$(Safe-Html $h.OwnerPID)</td><td>$(Safe-Html $h.OwnerName)</td><td>$(Safe-Html $h.Access)</td><td>$(Safe-Html $h.CheatMatch)</td><td>$(Safe-Html $h.OwnerPath)</td></tr>`n" }
+    $timelineRowsHtml = ""
+    foreach ($t in ($timeline | Sort-Object Time)) { $timelineRowsHtml += "<tr><td>$(Safe-Html $t.Time)</td><td>$(Safe-Html $t.Event)</td></tr>`n" }
+    $fpRowsHtml = ""
+    foreach ($fp in $findings["FalsePositives"]) { $fpRowsHtml += "<tr><td>$(Safe-Html $fp.Type)</td><td>$(Safe-Html $fp.Detail)</td><td>$(Safe-Html $fp.Reason)</td></tr>`n" }
+
+    $totalFinds = ($findings.Keys | Where-Object { $_ -ne "FalsePositives" } | ForEach-Object { $findings[$_].Count } | Measure-Object -Sum).Sum
 
     $html = @"
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<meta charset='UTF-8'>
-<title>Roblox Cheat Scanner v4.4 Report</title>
+<meta charset="UTF-8">
+<title>Roblox Cheat Scanner v4.4 -- Property of JD</title>
 <style>
-  body { background:#111; color:#eee; font-family:Consolas,monospace; padding:20px; }
-  h1 { color:#00ccff; }
-  h2 { color:#aaa; border-bottom:1px solid #333; padding-bottom:4px; }
-  table { width:100%; border-collapse:collapse; margin-bottom:20px; }
-  th { background:#222; color:#00ccff; padding:6px; text-align:left; }
-  td { padding:5px; border-bottom:1px solid #222; font-size:12px; word-break:break-all; }
-  .card { background:#1a1a1a; border:1px solid #333; border-radius:6px; padding:16px; margin-bottom:16px; display:inline-block; min-width:180px; margin-right:12px; }
-  .card-title { color:#888; font-size:11px; }
-  .card-val { font-size:28px; font-weight:bold; }
-  .hit { color:#ff44aa; }
-  .warn { color:#ffaa00; }
-  .ok { color:#00cc66; }
+  :root{--bg:#0a0a0f;--bg2:#0f1117;--bg3:#161b27;--accent:#00d4ff;--red:#ff3d3d;--yellow:#ffd700;--green:#00ff88;--magenta:#ff44aa;--text:#e8e8e8;--muted:#666;--border:#1e2435}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:Consolas,'Courier New',monospace;padding:24px;line-height:1.7;font-size:13px}
+  h1{color:var(--accent);border-bottom:1px solid var(--accent);padding-bottom:8px;margin-bottom:20px;font-size:1.5em}
+  h2{color:var(--accent);margin:28px 0 10px;border-left:3px solid var(--accent);padding-left:10px;text-transform:uppercase;font-size:1em}
+  .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin:16px 0}
+  .card{background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:12px}
+  .card .label{color:var(--muted);font-size:.75em;text-transform:uppercase}
+  .card .value{font-size:1.3em;font-weight:bold;margin-top:4px}
+  .score-green{color:var(--green)}.score-yellow{color:var(--yellow)}.score-red{color:var(--red)}
+  table{border-collapse:collapse;width:100%;margin:6px 0 16px;font-size:.82em}
+  th{background:var(--bg3);color:var(--accent);padding:7px 10px;text-align:left;border-bottom:1px solid var(--border)}
+  td{padding:5px 10px;border-bottom:1px solid var(--border);word-break:break-all}
+  tr:hover td{background:var(--bg3)}
+  .verdict-box{background:var(--bg3);border:1px solid var(--accent);border-radius:4px;padding:16px;margin:16px 0}
+  footer{margin-top:32px;color:var(--muted);font-size:.75em;border-top:1px solid var(--border);padding-top:10px}
 </style>
 </head>
 <body>
-<h1>Roblox Cheat Scanner v4.4</h1>
-<p>Computer: <b>$env:COMPUTERNAME</b> | User: <b>$env:USERNAME</b> | Time: <b>$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</b></p>
-<div>
-  <div class='card'><div class='card-title'>Total Findings</div><div class='card-val $(if ($totalHits -gt 0) {"hit"} else {"ok"})'>$totalHits</div></div>
-  <div class='card'><div class='card-title'>Config Score</div><div class='card-val $(if ($configAvg -ge 80) {"ok"} elseif ($configAvg -ge 50) {"warn"} else {"hit"})'>$configAvg</div></div>
-  <div class='card'><div class='card-title'>Cheat Score</div><div class='card-val $(if ($cheatAvg -ge 80) {"ok"} elseif ($cheatAvg -ge 50) {"warn"} else {"hit"})'>$cheatAvg</div></div>
-  <div class='card'><div class='card-title'>Memory Hits</div><div class='card-val $(if ($memoryFindings.Count -gt 0) {"hit"} else {"ok"})'>$($memoryFindings.Count)</div></div>
-  <div class='card'><div class='card-title'>Delta Findings</div><div class='card-val $(if ($deltaFindings.Count -gt 0) {"warn"} else {"ok"})'>$($deltaFindings.Count)</div></div>
+<h1>ROBLOX CHEAT SCANNER v4.4 -- PROPERTY OF JD</h1>
+<div class="summary-grid">
+  <div class="card"><div class="label">Computer</div><div class="value">$(Safe-Html $env:COMPUTERNAME)</div></div>
+  <div class="card"><div class="label">User</div><div class="value">$(Safe-Html $env:USERNAME)</div></div>
+  <div class="card"><div class="label">Scan Time</div><div class="value">$(Get-Date -Format 'yyyy-MM-dd HH:mm')</div></div>
+  <div class="card"><div class="label">Duration</div><div class="value">${scanDuration}s</div></div>
+  <div class="card"><div class="label">Total Findings</div><div class="value $(if ($totalFinds -gt 0) { 'score-red' } else { 'score-green' })">$totalFinds</div></div>
+  <div class="card"><div class="label">Config Score</div><div class="value">$($scores.Config)/100</div></div>
+  <div class="card"><div class="label">Cheat Score</div><div class="value $(if ($scores.Cheat -lt 70) { 'score-red' } elseif ($scores.Cheat -lt 90) { 'score-yellow' } else { 'score-green' })">$($scores.Cheat)/100</div></div>
 </div>
+<div class="verdict-box"><strong>VERDICT:</strong>
+$(if ($scores.Cheat -ge 90) { "<span class='score-green'>No cheat evidence found.</span>" }
+  elseif ($scores.Cheat -ge 70) { "<span class='score-yellow'>Minor suspicious activity -- review findings.</span>" }
+  elseif ($scores.Cheat -ge 40) { "<span class='score-red'>Suspicious -- likely cheat activity detected.</span>" }
+  else { "<span class='score-red'>HIGH CONFIDENCE -- significant cheat evidence found.</span>" })
+</div>
+<h2>System Configuration Scores</h2>
+<table><tr><th>Category</th><th>Score</th></tr>$configRows</table>
+<h2>Cheat Evidence Scores</h2>
+<table><tr><th>Category</th><th>Score</th></tr>$cheatRows</table>
 <h2>All Findings</h2>
 <table><tr><th>Category</th><th>Type</th><th>Detail</th><th>Value</th><th>Timestamp</th></tr>$rowsHtml</table>
-<h2>Score Breakdown</h2>
-<table><tr><th>Config Category</th><th>Score</th></tr>$configRows</table>
-<table><tr><th>Cheat Category</th><th>Score</th></tr>$cheatRows</table>
 <h2>Memory String Hits</h2>
 <table><tr><th>String</th><th>Address</th><th>Region</th></tr>$memRowsHtml</table>
-<h2>Suspicious Memory (Roblox API)</h2>
+<h2>Suspicious Memory (Roblox API, not confirmed cheat)</h2>
 <table><tr><th>String</th><th>Address</th><th>Region</th></tr>$suspMemRowsHtml</table>
+<h2>Shellcode Threads</h2>
+<table><tr><th>PID</th><th>Process</th><th>TID</th><th>Start Addr</th><th>Protection</th></tr>$threadRowsHtml</table>
+<h2>Hollowed Processes</h2>
+<table><tr><th>PID</th><th>Process</th><th>Path</th><th>Note</th></tr>$hollowRowsHtml</table>
+<h2>Suspicious Named Pipes</h2>
+<table><tr><th>Pipe Name</th><th>Match</th></tr>$pipeRowsHtml</table>
+<h2>Roblox Handle Holders</h2>
+<table><tr><th>Owner PID</th><th>Owner Name</th><th>Access</th><th>Cheat Match</th><th>Path</th></tr>$handleRowsHtml</table>
+<h2>Kernel Driver Findings</h2>
+<table><tr><th>Name</th><th>File</th><th>Time</th><th>Note</th></tr>$kernelRowsHtml</table>
+<h2>Launch Chain Findings</h2>
+<table><tr><th>Roblox Process</th><th>Parent</th><th>Path</th><th>Note</th></tr>$launchRowsHtml</table>
 <h2>Snapshot Delta</h2>
 <table><tr><th>Category</th><th>Change</th><th>Entry</th><th>Note</th></tr>$deltaRowsHtml</table>
-</body>
-</html>
+<h2>Event Timeline</h2>
+<table><tr><th>Time</th><th>Event</th></tr>$timelineRowsHtml</table>
+<h2>False Positives Excluded ($($findings["FalsePositives"].Count))</h2>
+<table><tr><th>Type</th><th>Detail</th><th>Reason</th></tr>$fpRowsHtml</table>
+<footer>Roblox Cheat Scanner v4.4 | Property of JD | $env:COMPUTERNAME | $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</footer>
+</body></html>
 "@
-    $html | Out-File $reportPath -Encoding UTF8 -Force
+    try {
+        $html | Out-File $reportPath -Encoding UTF8 -Force
+        Write-OK "HTML report saved: $reportPath"
+    } catch { Write-Fail "Could not save report: $($_.Exception.Message)" }
+    Read-Host "  Press ENTER to continue"
     return $reportPath
 }
 
 # =====================================================
 # GUI VIEWERS
 # =====================================================
-function Show-DeltaGui($deltaData) {
-    if (-not $deltaData -or $deltaData.Count -eq 0) { return }
-    $form        = New-Object System.Windows.Forms.Form
-    $form.Text   = "v4.4 -- Snapshot Delta Viewer"
-    $form.Size   = New-Object System.Drawing.Size(1000, 600)
-    $form.BackColor = [System.Drawing.Color]::FromArgb(20,20,20)
-    $form.StartPosition = "CenterScreen"
+function New-DarkForm($title) {
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text        = "$title | ENTER to close"
+    $form.WindowState = 'Maximized'
+    $form.BackColor   = [System.Drawing.Color]::FromArgb(13,13,18)
+    $form.ControlBox  = $false
+    return $form
+}
+function New-CloseBar($text) {
+    $bar = New-Object System.Windows.Forms.Label
+    $bar.Dock = 'Bottom'; $bar.Height = 28
+    $bar.Text = "  ENTER to close  |  $text"
+    $bar.ForeColor = [System.Drawing.Color]::FromArgb(0,212,255)
+    $bar.BackColor = [System.Drawing.Color]::FromArgb(17,24,39)
+    $bar.Font      = New-Object System.Drawing.Font("Consolas",9)
+    $bar.TextAlign = 'MiddleLeft'
+    return $bar
+}
+function New-DarkListView($cols) {
+    $lv = New-Object System.Windows.Forms.ListView
+    $lv.View = 'Details'; $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.Dock = 'Fill'
+    $lv.Font      = New-Object System.Drawing.Font("Consolas",9)
+    $lv.BackColor = [System.Drawing.Color]::FromArgb(17,24,39)
+    $lv.ForeColor = [System.Drawing.Color]::FromArgb(224,224,224)
+    foreach ($c in $cols) { $lv.Columns.Add($c[0],$c[1]) | Out-Null }
+    return $lv
+}
+function Add-CleanRow($lv, $msg) {
+    $it = New-Object System.Windows.Forms.ListViewItem("Clean")
+    $it.ForeColor = [System.Drawing.Color]::FromArgb(0,255,136)
+    $it.SubItems.Add($msg) | Out-Null
+    $lv.Items.Add($it) | Out-Null
+}
+function Show-FinalForm($form) {
+    $form.KeyPreview = $true
+    $form.Add_KeyDown({ param($s,$e); if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter) { $form.Close() } })
+    [void]$form.ShowDialog()
+}
 
-    $grid = New-Object System.Windows.Forms.DataGridView
-    $grid.Dock = "Fill"
-    $grid.BackgroundColor   = [System.Drawing.Color]::FromArgb(20,20,20)
-    $grid.ForeColor         = [System.Drawing.Color]::White
-    $grid.GridColor         = [System.Drawing.Color]::FromArgb(50,50,50)
-    $grid.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(30,30,30)
-    $grid.DefaultCellStyle.ForeColor = [System.Drawing.Color]::White
-    $grid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(40,40,40)
-    $grid.ColumnHeadersDefaultCellStyle.ForeColor = [System.Drawing.Color]::Cyan
-    $grid.ReadOnly           = $true
-    $grid.AllowUserToAddRows = $false
-    $grid.AutoSizeColumnsMode = "Fill"
+function Show-DeltaGui {
+    if ($deltaFindings.Count -eq 0) { Write-Info "No delta changes to display"; return }
+    $form = New-DarkForm "Snapshot Delta Viewer -- $($deltaFindings.Count) change(s)"
+    $form.Controls.Add((New-CloseBar "Yellow=DELETED  Magenta=HIT added  Blue=clean added"))
+    $lv = New-DarkListView @(("Category",120),("Change",100),("Entry",300),("Full Path",460),("Note",300))
+    foreach ($d in $deltaFindings) {
+        $item = New-Object System.Windows.Forms.ListViewItem($d.Category)
+        $item.SubItems.Add([string]$d.Change)   | Out-Null
+        $item.SubItems.Add([string]$d.Entry)    | Out-Null
+        $item.SubItems.Add([string]$d.FullPath) | Out-Null
+        $item.SubItems.Add([string]$d.Note)     | Out-Null
+        if     ($d.Change -eq "DELETED")   { $item.ForeColor = [System.Drawing.Color]::FromArgb(255,215,0) }
+        elseif ($d.Change -eq "ADDED-HIT") { $item.BackColor = [System.Drawing.Color]::FromArgb(60,0,40); $item.ForeColor = [System.Drawing.Color]::FromArgb(255,80,180) }
+        else                                { $item.ForeColor = [System.Drawing.Color]::FromArgb(100,180,255) }
+        $lv.Items.Add($item) | Out-Null
+    }
+    $form.Controls.Add($lv)
+    Show-FinalForm $form
+}
 
-    $grid.Columns.Add("Category","Category") | Out-Null
-    $grid.Columns.Add("Change","Change")     | Out-Null
-    $grid.Columns.Add("Entry","Entry")       | Out-Null
-    $grid.Columns.Add("Note","Note")         | Out-Null
+function Show-KernelGui {
+    if ($kernelFindings.Count -eq 0) { Write-Info "No kernel findings to display"; return }
+    $form = New-DarkForm "Kernel Driver Findings -- $($kernelFindings.Count)"
+    $form.Controls.Add((New-CloseBar "Red=cheat/BYOVD/temp path  Yellow=near Roblox/blocked  Gray=unfamiliar"))
+    $lv = New-DarkListView @(("Driver Name",220),("File",420),("Time",170),("Note",320))
+    foreach ($k in $kernelFindings) {
+        $item = New-Object System.Windows.Forms.ListViewItem([string]$k.Name)
+        $item.SubItems.Add([string]$k.File) | Out-Null
+        $item.SubItems.Add([string]$k.Time) | Out-Null
+        $item.SubItems.Add([string]$k.Note) | Out-Null
+        if ($k.Note -like "*CHEAT*" -or $k.Note -like "*BYOVD*" -or $k.Note -like "*TEMP*" -or $k.Note -like "*WIPED*") {
+            $item.BackColor = [System.Drawing.Color]::FromArgb(60,0,0); $item.ForeColor = [System.Drawing.Color]::FromArgb(255,80,80)
+        } elseif ($k.Note -like "*Roblox*" -or $k.Note -like "*BLOCKED*") {
+            $item.ForeColor = [System.Drawing.Color]::FromArgb(255,215,0)
+        } else { $item.ForeColor = [System.Drawing.Color]::FromArgb(160,160,160) }
+        $lv.Items.Add($item) | Out-Null
+    }
+    $form.Controls.Add($lv)
+    Show-FinalForm $form
+}
 
-    foreach ($d in $deltaData) {
-        $idx = $grid.Rows.Add($d.Category, $d.Change, $d.Entry, $d.Note)
-        $color = switch ($d.Change)
+function Show-LaunchChainGui {
+    if ($launchChainFindings.Count -eq 0) { Write-Info "No launch chain findings to display"; return }
+    $form = New-DarkForm "Launch Chain Findings -- $($launchChainFindings.Count)"
+    $form.Controls.Add((New-CloseBar "Red=cheat in chain  Magenta=3rd party launcher  Gray=unrecognized"))
+    $lv = New-DarkListView @(("Roblox Process",220),("Parent Name",200),("Note",280),("Parent Path",460))
+    foreach ($l in $launchChainFindings) {
+        $item = New-Object System.Windows.Forms.ListViewItem([string]$l.RobloxProcess)
+        $item.SubItems.Add([string]$l.ParentName) | Out-Null
+        $item.SubItems.Add([string]$l.Note)       | Out-Null
+        $item.SubItems.Add([string]$l.ParentPath) | Out-Null
+        if ($l.Note -like "*CHEAT*") { $item.BackColor = [System.Drawing.Color]::FromArgb(60,0,0); $item.ForeColor = [System.Drawing.Color]::FromArgb(255,80,80) }
+        elseif ($l.Note -like "*launcher*" -or $l.Note -like "*party*" -or $l.Note -like "*OFFICIAL*") { $item.ForeColor = [System.Drawing.Color]::FromArgb(255,80,200) }
+        else { $item.ForeColor = [System.Drawing.Color]::FromArgb(160,160,160) }
+        $lv.Items.Add($item) | Out-Null
+    }
+    $form.Controls.Add($lv)
+    Show-FinalForm $form
+}
+
+function Show-MemoryGui {
+    $form = New-DarkForm "Memory / Thread / Hollow / Pipe / Handle Viewer"
+    $form.Controls.Add((New-CloseBar "Red=cheat/shellcode/hollow  Yellow=unrecognized handle holder"))
+    $tab = New-Object System.Windows.Forms.TabControl
+    $tab.Dock = 'Fill'; $tab.Font = New-Object System.Drawing.Font("Consolas",9)
+
+    function New-Tab($name) {
+        $tp = New-Object System.Windows.Forms.TabPage($name)
+        $tp.BackColor = [System.Drawing.Color]::FromArgb(17,24,39)
+        $tp.ForeColor = [System.Drawing.Color]::FromArgb(0,212,255)
+        return $tp
+    }
+
+    $tp1 = New-Tab "String Hits ($($memoryFindings.Count))"
+    $lv1 = New-DarkListView @(("String",220),("Address",160),("Region",220))
+    if ($memoryFindings.Count -eq 0) { Add-CleanRow $lv1 "No confirmed cheat strings found" }
+    else {
+        foreach ($m in $memoryFindings) {
+            $it = New-Object System.Windows.Forms.ListViewItem([string]$m.String)
+            $it.SubItems.Add([string]$m.Address) | Out-Null
+            $it.SubItems.Add([string]$m.Region)  | Out-Null
+            $it.BackColor = [System.Drawing.Color]::FromArgb(60,0,0); $it.ForeColor = [System.Drawing.Color]::FromArgb(255,80,80)
+            $lv1.Items.Add($it) | Out-Null
+        }
+    }
+    $tp1.Controls.Add($lv1); $tab.TabPages.Add($tp1)
+
+    $tp2 = New-Tab "Suspicious ($($suspiciousMemFindings.Count))"
+    $lv2 = New-DarkListView @(("String",220),("Address",160),("Region",220))
+    if ($suspiciousMemFindings.Count -eq 0) { Add-CleanRow $lv2 "No suspicious-but-likely-legitimate strings found" }
+    else {
+        foreach ($m in $suspiciousMemFindings) {
+            $it = New-Object System.Windows.Forms.ListViewItem([string]$m.String)
+            $it.SubItems.Add([string]$m.Address) | Out-Null
+            $it.SubItems.Add([string]$m.Region)  | Out-Null
+            $it.ForeColor = [System.Drawing.Color]::FromArgb(255,215,0)
+            $lv2.Items.Add($it) | Out-Null
+        }
+    }
+    $tp2.Controls.Add($lv2); $tab.TabPages.Add($tp2)
+
+    $tp3 = New-Tab "Threads ($($threadFindings.Count))"
+    $lv3 = New-DarkListView @(("PID",70),("Process",180),("TID",90),("Start Addr",170),("Protection",180))
+    if ($threadFindings.Count -eq 0) { Add-CleanRow $lv3 "No shellcode threads detected" }
+    else {
+        foreach ($t in $threadFindings) {
+            $it = New-Object System.Windows.Forms.ListViewItem([string]$t.PID)
+            $it.SubItems.Add([string]$t.Name)       | Out-Null
+            $it.SubItems.Add([string]$t.ThreadID)   | Out-Null
+            $it.SubItems.Add([string]$t.StartAddr)  | Out-Null
+            $it.SubItems.Add([string]$t.Protection) | Out-Null
+            $it.BackColor = [System.Drawing.Color]::FromArgb(60,0,0); $it.ForeColor = [System.Drawing.Color]::FromArgb(255,80,80)
+            $lv3.Items.Add($it) | Out-Null
+        }
+    }
+    $tp3.Controls.Add($lv3); $tab.TabPages.Add($tp3)
+
+    $tp4 = New-Tab "Hollow ($($hollowFindings.Count))"
+    $lv4 = New-DarkListView @(("PID",70),("Process",180),("Path",400),("Note",400))
+    if ($hollowFindings.Count -eq 0) { Add-CleanRow $lv4 "No hollowed processes detected" }
+    else {
+        foreach ($h in $hollowFindings) {
+            $it = New-Object System.Windows.Forms.ListViewItem([string]$h.PID)
+            $it.SubItems.Add([string]$h.Name) | Out-Null
+            $it.SubItems.Add([string]$h.Path) | Out-Null
+            $it.SubItems.Add([string]$h.Note) | Out-Null
+            $it.BackColor = [System.Drawing.Color]::FromArgb(60,0,0); $it.ForeColor = [System.Drawing.Color]::FromArgb(255,0,170)
+            $lv4.Items.Add($it) | Out-Null
+        }
+    }
+    $tp4.Controls.Add($lv4); $tab.TabPages.Add($tp4)
+
+    $tp5 = New-Tab "Pipes ($($pipeFindings.Count))"
+    $lv5 = New-DarkListView @(("Pipe Name",400),("Match",300))
+    if ($pipeFindings.Count -eq 0) { Add-CleanRow $lv5 "No cheat named pipes found" }
+    else {
+        foreach ($p in $pipeFindings) {
+            $it = New-Object System.Windows.Forms.ListViewItem([string]$p.PipeName)
+            $it.SubItems.Add([string]$p.Match) | Out-Null
+            $it.BackColor = [System.Drawing.Color]::FromArgb(60,0,0); $it.ForeColor = [System.Drawing.Color]::FromArgb(255,80,80)
+            $lv5.Items.Add($it) | Out-Null
+        }
+    }
+    $tp5.Controls.Add($lv5); $tab.TabPages.Add($tp5)
+
+    $tp6 = New-Tab "Handles ($($handleFindings.Count))"
+    $lv6 = New-DarkListView @(("Owner PID",80),("Owner Name",180),("Access",100),("Cheat Match",150),("Path",420))
+    if ($handleFindings.Count -eq 0) { Add-CleanRow $lv6 "No unexpected processes holding Roblox open" }
+    else {
+        foreach ($h in $handleFindings) {
+            $it = New-Object System.Windows.Forms.ListViewItem([string]$h.OwnerPID)
+            $it.SubItems.Add([string]$h.OwnerName) | Out-Null
+            $it.SubItems.Add([string]$h.Access)    | Out-Null
+            $it.SubItems.Add([string]$(if ($h.CheatMatch) { $h.CheatMatch } else { "None" })) | Out-Null
+            $it.SubItems.Add([string]$h.OwnerPath) | Out-Null
+            if ($h.CheatMatch) { $it.BackColor = [System.Drawing.Color]::FromArgb(60,0,0); $it.ForeColor = [System.Drawing.Color]::FromArgb(255,80,80) }
+            else { $it.ForeColor = [System.Drawing.Color]::FromArgb(255,215,0) }
+            $lv6.Items.Add($it) | Out-Null
+        }
+    }
+    $tp6.Controls.Add($lv6); $tab.TabPages.Add($tp6)
+
+    $form.Controls.Add($tab)
+    Show-FinalForm $form
+}
+
+function Show-BAMGui {
+    if ($bamViewerData.Count -eq 0) { Write-Info "No BAM data to display"; return }
+    $form = New-DarkForm "BAM Viewer -- $($bamViewerData.Count) entries"
+    $form.Controls.Add((New-CloseBar "Red=cheat match"))
+    $tab = New-Object System.Windows.Forms.TabControl
+    $tab.Dock = 'Fill'; $tab.Font = New-Object System.Drawing.Font("Consolas",9)
+
+    function New-BamTab($name) {
+        $tp = New-Object System.Windows.Forms.TabPage($name)
+        $tp.BackColor = [System.Drawing.Color]::FromArgb(17,24,39)
+        $tp.ForeColor = [System.Drawing.Color]::FromArgb(0,212,255)
+        return $tp
+    }
+    function Fill-BamList($lv, $data) {
+        foreach ($r in ($data | Sort-Object LastRun -Descending)) {
+            $item = New-Object System.Windows.Forms.ListViewItem([string]$r.LastRun)
+            $item.SubItems.Add([string]$r.Path) | Out-Null
+            $item.SubItems.Add([string]$r.SID)  | Out-Null
+            $item.SubItems.Add([string]$(if ($r.Flagged) { $r.Match } else { "" })) | Out-Null
+            if ($r.Flagged) { $item.BackColor = [System.Drawing.Color]::FromArgb(60,0,0); $item.ForeColor = [System.Drawing.Color]::FromArgb(255,80,80) }
+            $lv.Items.Add($item) | Out-Null
+        }
+    }
+
+    $tpAll = New-BamTab "All ($($bamViewerData.Count))"
+    $lvAll = New-DarkListView @(("Last Run",170),("Path",520),("SID",180),("Match",150))
+    Fill-BamList $lvAll $bamViewerData
+    $tpAll.Controls.Add($lvAll); $tab.TabPages.Add($tpAll)
+
+    $flagged = @($bamViewerData | Where-Object { $_.Flagged })
+    $tpFlag = New-BamTab "Flagged ($($flagged.Count))"
+    $lvFlag = New-DarkListView @(("Last Run",170),("Path",520),("SID",180),("Match",150))
+    if ($flagged.Count -eq 0) { Add-CleanRow $lvFlag "No flagged BAM entries" } else { Fill-BamList $lvFlag $flagged }
+    $tpFlag.Controls.Add($lvFlag); $tab.TabPages.Add($tpFlag)
+
+    $byUser = $bamViewerData | Group-Object SID
+    $tpUser = New-BamTab "By User ($($byUser.Count) SIDs)"
+    $lvUser = New-DarkListView @(("Last Run",170),("Path",520),("SID",180),("Match",150))
+    Fill-BamList $lvUser $bamViewerData
+    $tpUser.Controls.Add($lvUser); $tab.TabPages.Add($tpUser)
+
+    $form.Controls.Add($tab)
+    Show-FinalForm $form
+}
+
+function Show-PrefetchGui {
+    if ($prefetchViewerData.Count -eq 0) { Write-Info "No prefetch data to display"; return }
+    $form = New-DarkForm "Prefetch Viewer -- $($prefetchViewerData.Count) entries"
+    $form.Controls.Add((New-CloseBar "Red=cheat match  Yellow=ran 3+ times"))
+    $panel = New-Object System.Windows.Forms.Panel; $panel.Dock = 'Top'; $panel.Height = 34
+    $panel.BackColor = [System.Drawing.Color]::FromArgb(15,17,23)
+    $search = New-Object System.Windows.Forms.TextBox
+    $search.Dock = 'Fill'; $search.Font = New-Object System.Drawing.Font("Consolas",10)
+    $search.BackColor = [System.Drawing.Color]::FromArgb(22,27,39); $search.ForeColor = [System.Drawing.Color]::FromArgb(232,232,232)
+    $search.Text = "Search prefetch..."
+    $panel.Controls.Add($search)
+
+    $lv = New-DarkListView @(("File Name",260),("Exe",200),("Size KB",75),("Last Run",170),("Runs",55),("All Run Times",560))
+    $allItems = [System.Collections.Generic.List[System.Windows.Forms.ListViewItem]]::new()
+    foreach ($r in ($prefetchViewerData | Sort-Object LastRun -Descending)) {
+        $item = New-Object System.Windows.Forms.ListViewItem([string]$r.FileName)
+        $item.SubItems.Add([string]$r.Exe)         | Out-Null
+        $item.SubItems.Add([string]$r.SizeKB)      | Out-Null
+        $item.SubItems.Add([string]$r.LastRun)     | Out-Null
+        $item.SubItems.Add([string]$r.RunCount)    | Out-Null
+        $item.SubItems.Add([string]$r.AllRunTimes) | Out-Null
+        if ($r.Flagged) { $item.BackColor = [System.Drawing.Color]::FromArgb(60,0,0); $item.ForeColor = [System.Drawing.Color]::FromArgb(255,80,80) }
+        elseif ([int]$r.RunCount -gt 2) { $item.ForeColor = [System.Drawing.Color]::FromArgb(255,215,0) }
+        $allItems.Add($item)
+        $lv.Items.Add($item) | Out-Null
+    }
+    $search.Add_TextChanged({
+        $q = $search.Text.ToLower(); $lv.BeginUpdate(); $lv.Items.Clear()
+        foreach ($it in $allItems) {
+            if ($q -eq "" -or $q -eq "search prefetch..." -or $it.Text.ToLower() -like "*$q*" -or $it.SubItems[1].Text.ToLower() -like "*$q*") {
+                $lv.Items.Add($it) | Out-Null
+            }
+        }
+        $lv.EndUpdate()
+    })
+    $search.Add_Enter({ if ($search.Text -eq "Search prefetch...") { $search.Text = "" } })
+    $search.Add_Leave({ if ($search.Text -eq "") { $search.Text = "Search prefetch..." } })
+
+    $container = New-Object System.Windows.Forms.Panel; $container.Dock = 'Fill'
+    $form.Controls.Add($container); $form.Controls.Add($panel); $container.Controls.Add($lv)
+    $form.KeyPreview = $true
+    $form.Add_KeyDown({ param($s,$e); if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter -and -not $search.Focused) { $form.Close() } })
+    [void]$form.ShowDialog()
+}
+
+function Show-UnsignedDriverGui {
+    $unsignedDrivers = [System.Collections.Generic.List[object]]::new()
+    try {
+        foreach ($drv in @(Get-WmiObject Win32_SystemDriver -ErrorAction Stop | Where-Object { $_.State -eq "Running" })) {
+            $drvName = ($drv.Name -replace "\.sys$","").ToLower()
+            if (Is-KnownLegitDriver $drvName) { continue }
+            $path = $drv.PathName
+            if (-not $path) { continue }
+            $cleanPath = $path -replace '\\\\?\\.\\','' -replace '"',''
+            if (Is-GlobalFP $cleanPath) { continue }
+            $sig = $null
+            try { $sig = Get-AuthenticodeSignature $cleanPath -ErrorAction Stop } catch {}
+            $sigStatus = if ($sig) { $sig.Status.ToString() } else { "Unreadable" }
+            if (-not $sig -or $sig.Status -ne "Valid") {
+                $cheatMatch = Test-CheatMatch $drvName
+                $inTemp = $cleanPath.ToLower() -like "*\temp\*" -or $cleanPath.ToLower() -like "*\appdata\*"
+                $isByovd = $false
+                foreach ($bd in $byovdDrivers) { if ($drvName -like "*$bd*") { $isByovd = $true; break } }
+                $unsignedDrivers.Add([PSCustomObject]@{ Name=$drv.Name; Path=$cleanPath; SigStatus=$sigStatus; CheatMatch=if($cheatMatch){$cheatMatch}else{""}; InTemp=$inTemp; IsByovd=$isByovd; StartMode=$drv.StartMode })
+            }
+        }
+    } catch { Write-Warn "Could not enumerate drivers for unsigned GUI" }
+
+    if ($unsignedDrivers.Count -eq 0) { Write-OK "No unsigned running drivers found"; return }
+
+    $form = New-DarkForm "Unsigned Driver Viewer -- $($unsignedDrivers.Count) driver(s)"
+    $form.Controls.Add((New-CloseBar "Red=cheat/BYOVD/temp path  Yellow=unsigned unknown  Gray=likely benign"))
+    $panel = New-Object System.Windows.Forms.Panel; $panel.Dock = 'Top'; $panel.Height = 34
+    $panel.BackColor = [System.Drawing.Color]::FromArgb(15,17,23)
+    $search = New-Object System.Windows.Forms.TextBox
+    $search.Dock = 'Fill'; $search.Font = New-Object System.Drawing.Font("Consolas",10)
+    $search.BackColor = [System.Drawing.Color]::FromArgb(22,27,39); $search.ForeColor = [System.Drawing.Color]::FromArgb(232,232,232)
+    $search.Text = "Search drivers..."
+    $panel.Controls.Add($search)
+
+    $lv = New-DarkListView @(("Driver Name",180),("Sig Status",100),("Cheat Match",130),("BYOVD",60),("Temp Path",70),("Start Mode",90),("Path",460))
+    $allItems = [System.Collections.Generic.List[System.Windows.Forms.ListViewItem]]::new()
+    foreach ($drv in ($unsignedDrivers | Sort-Object CheatMatch -Descending)) {
+        $item = New-Object System.Windows.Forms.ListViewItem([string]$drv.Name)
+        $item.SubItems.Add([string]$drv.SigStatus)                              | Out-Null
+        $item.SubItems.Add([string]$drv.CheatMatch)                             | Out-Null
+        $item.SubItems.Add([string]$(if ($drv.IsByovd) { "YES" } else { "" }))   | Out-Null
+        $item.SubItems.Add([string]$(if ($drv.InTemp)  { "YES" } else { "" }))   | Out-Null
+        $item.SubItems.Add([string]$drv.StartMode)                              | Out-Null
+        $item.SubItems.Add([string]$drv.Path)                                   | Out-Null
+        if ($drv.CheatMatch -or $drv.IsByovd -or $drv.InTemp) { $item.BackColor = [System.Drawing.Color]::FromArgb(60,0,0); $item.ForeColor = [System.Drawing.Color]::FromArgb(255,80,80) }
+        elseif ($drv.SigStatus -eq "NotSigned") { $item.ForeColor = [System.Drawing.Color]::FromArgb(255,215,0) }
+        else { $item.ForeColor = [System.Drawing.Color]::FromArgb(160,160,160) }
+        $allItems.Add($item)
+        $lv.Items.Add($item) | Out-Null
+    }
+    $search.Add_TextChanged({
+        $q = $search.Text.ToLower(); $lv.BeginUpdate(); $lv.Items.Clear()
+        foreach ($it in $allItems) {
+            if ($q -eq "" -or $q -eq "search drivers..." -or $it.Text.ToLower() -like "*$q*" -or $it.SubItems[6].Text.ToLower() -like "*$q*") {
+                $lv.Items.Add($it) | Out-Null
+            }
+        }
+        $lv.EndUpdate()
+    })
+    $search.Add_Enter({ if ($search.Text -eq "Search drivers...") { $search.Text = "" } })
+    $search.Add_Leave({ if ($search.Text -eq "") { $search.Text = "Search drivers..." } })
+
+    $container = New-Object System.Windows.Forms.Panel; $container.Dock = 'Fill'
+    $form.Controls.Add($container); $form.Controls.Add($panel); $container.Controls.Add($lv)
+    $form.KeyPreview = $true
+    $form.Add_KeyDown({ param($s,$e); if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter -and -not $search.Focused) { $form.Close() } })
+    [void]$form.ShowDialog()
+}
+
+# =====================================================
+# MAIN EXECUTION
+# =====================================================
+Write-Banner
+Select-TimeRange
+
+Write-Host "  +============================================================+" -ForegroundColor Yellow
+Write-Host "  |  INSTRUCTIONS                                             |" -ForegroundColor Yellow
+Write-Host "  |  FIRST SCAN : Roblox CLOSED -- saves baseline snapshot    |" -ForegroundColor Yellow
+Write-Host "  |  SECOND SCAN: Open Roblox, join game, wait 1-3 min, run   |" -ForegroundColor Yellow
+Write-Host "  +============================================================+" -ForegroundColor Yellow
+Write-Host ""
+
+$robloxRunning = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $robloxProcessNames -contains $_.ProcessName })
+if ($robloxRunning.Count -gt 0) {
+    Write-OK "Roblox detected: $($robloxRunning | ForEach-Object { "$($_.ProcessName) PID $($_.Id)" })"
+    Write-Info "Memory, thread, hollow, pipe, handle, kernel, and launch chain scans will run"
+} else {
+    Write-Warn "Roblox not detected -- memory/thread/hollow/pipe/handle/launch chain scans will be skipped"
+}
+Write-Host ""
+
+$previousSnapshot = Load-PreviousSnapshot
+$runningDelta     = $false
+if ($previousSnapshot) {
+    Write-Host "  Previous snapshot: $($previousSnapshot.Timestamp)" -ForegroundColor Cyan
+    Write-Host ""
+    $response = Read-Host "  Compare against previous scan? (Y/N)"
+    if ($response -match '^[Yy]') { $runningDelta = $true; Write-Info "Delta comparison will run after scanning" }
+    else { Write-Info "Delta comparison skipped" }
+} else {
+    Write-Info "No previous snapshot -- this is your baseline scan"
+    Read-Host "  Press ENTER to begin"
+}
+Write-Host ""
+
+Write-Host "  Taking snapshot..." -ForegroundColor Cyan
+$currentSnapshot = Get-CurrentSnapshot
+Write-OK "Snapshot: BAM=$($currentSnapshot.BAM.Count) | MUICache=$($currentSnapshot.MUICache.Count) | UserAssist=$($currentSnapshot.UserAssist.Count) | Shimcache=$($currentSnapshot.Shimcache.Count) | Prefetch=$($currentSnapshot.Prefetch.Count)"
+Write-Host ""
+Read-Host "  Press ENTER to begin full scan"
+
+$s1Hits  = Run-Section1
+$s2Hits  = Run-Section2
+$s3Hits  = Run-Section3
+$s4Hits  = Run-Section4
+$s5Hits  = Run-Section5
+$s6Hits  = Run-Section6
+$s7Hits  = Run-Section7
+$rflHits = Run-RobloxFolderCheck
+$memHits = Run-MemoryScan
+$panHits = Run-PANScan
+$krnHits = Run-KernelDriverScan
+$lchHits = Run-LaunchChainScan
+$logHits = Scan-RobloxLogs
+$amcHits = Run-AmCacheScan
+
+if ($runningDelta -and $previousSnapshot) {
+    Compare-Snapshots $previousSnapshot $currentSnapshot
+}
+
+if (Save-Snapshot $currentSnapshot) { Write-OK "Snapshot saved: $snapshotPath" }
+else { Write-Warn "Could not save snapshot" }
+Write-Host ""
+
+Show-FindingsSummary
+$scores = Show-Scores
+
+Write-Header "OPENING VIEWERS" "Cyan"
+
+if ($deltaFindings.Count -gt 0) {
+    Read-Host "  Press ENTER to open Snapshot Delta viewer ($($deltaFindings.Count) changes)"
+    Show-DeltaGui
+}
+if ($kernelFindings.Count -gt 0) {
+    Read-Host "  Press ENTER to open Kernel Driver viewer ($($kernelFindings.Count) finding(s))"
+    Show-KernelGui
+}
+Read-Host "  Press ENTER to open Unsigned Driver viewer"
+Show-UnsignedDriverGui
+
+Read-Host "  Press ENTER to open Launch Chain viewer"
+Show-LaunchChainGui
+
+Read-Host "  Press ENTER to open Memory viewer"
+Show-MemoryGui
+
+Read-Host "  Press ENTER to open BAM viewer"
+Show-BAMGui
+
+Read-Host "  Press ENTER to open Prefetch viewer"
+Show-PrefetchGui
+
+$reportFile = Generate-Report $scores
+Write-OK "Done. Report: $reportFile"
